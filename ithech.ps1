@@ -9,7 +9,11 @@ try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::
 
 function Read-HostClean {
     param([string]$Prompt)
-    try { $Host.UI.RawUI.FlushInputBuffer() } catch {}
+    for ($i = 0; $i -lt 4; $i++) {
+        try { while ([Console]::KeyAvailable) { [Console]::ReadKey($true) | Out-Null } } catch {}
+        try { $Host.UI.RawUI.FlushInputBuffer() } catch {}
+        Start-Sleep -Milliseconds 100
+    }
     return Read-Host $Prompt
 }
 
@@ -196,6 +200,7 @@ function Get-WindowsIso {
 }
 
 function Find-WindowsSetup {
+    # 1. Racines de lecteurs (ISO monte, cle USB)
     foreach ($drive in (Get-PSDrive -PSProvider FileSystem -ErrorAction SilentlyContinue)) {
         $setupPath = Join-Path $drive.Root "setup.exe"
         $wim = Join-Path $drive.Root "sources\install.wim"
@@ -205,6 +210,24 @@ function Find-WindowsSetup {
             return $setupPath
         }
     }
+
+    # 2. Dossiers courants d'extraction (7-Zip, etc.) -- recherche limitee en profondeur
+    #    pour eviter de scanner tout le disque
+    $searchRoots = @($env:TEMP, "$env:USERPROFILE\Desktop", "$env:USERPROFILE\Downloads")
+    foreach ($root in $searchRoots) {
+        if (-not (Test-Path $root -ErrorAction SilentlyContinue)) { continue }
+        $found = Get-ChildItem -Path $root -Filter "setup.exe" -Recurse -Depth 3 -ErrorAction SilentlyContinue |
+            Where-Object {
+                (Test-Path (Join-Path $_.DirectoryName "sources\install.wim") -ErrorAction SilentlyContinue) -or
+                (Test-Path (Join-Path $_.DirectoryName "sources\install.esd") -ErrorAction SilentlyContinue)
+            } | Select-Object -First 1
+        if ($found) { return $found.FullName }
+    }
+
+    # 3. Dernier recours : demander le chemin exact (ex: extraction 7-Zip ailleurs)
+    Write-Host "setup.exe introuvable automatiquement (racines de lecteur, Temp, Bureau, Telechargements)." -ForegroundColor Yellow
+    $manual = Read-HostClean "Chemin complet vers setup.exe (ou vide pour annuler)"
+    if ($manual -and (Test-Path $manual -ErrorAction SilentlyContinue)) { return $manual }
     return $null
 }
 
