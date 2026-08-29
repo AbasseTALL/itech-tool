@@ -161,10 +161,26 @@ function MenuReparation {
     } while ($true)
 }
 
+function Add-DefenderExclusions {
+    $paths = @(
+        (Join-Path $env:TEMP "Fido.ps1"),
+        (Join-Path $env:TEMP "Windows10.iso"),
+        (Join-Path $env:TEMP "Windows11.iso")
+    )
+    foreach ($p in $paths) {
+        try {
+            Add-MpPreference -ExclusionPath $p -ErrorAction Stop
+        } catch {
+            # Defender absent, ou gere par une politique d'entreprise/GPO -- on ignore
+        }
+    }
+}
+
 function Get-WindowsIso {
     param([string]$WinVersion, [string]$Edition = "Pro")
 
     $fidoPath = Join-Path $env:TEMP "Fido.ps1"
+    Add-DefenderExclusions
     Write-Host "Recuperation de Fido (telechargeur officiel d'ISO Microsoft)..."
     try {
         (New-Object Net.WebClient).DownloadFile(
@@ -324,6 +340,49 @@ function MiseANiveau {
     Read-HostClean "`nAppuie sur Entree pour continuer"
 }
 
+function FixTLS {
+    Clear-Host
+    Write-Host "===============================================" -ForegroundColor Cyan
+    Write-Host "  ITHECH - Activation TLS 1.1 / TLS 1.2" -ForegroundColor Cyan
+    Write-Host "===============================================`n"
+    Write-Host "Sans ca, ce PC ne peut pas atteindre la plupart des sites HTTPS actuels`n(dont microsoft.com), ni telecharger quoi que ce soit via PowerShell.`n"
+
+    $keys = @(
+        @{Path="HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.1\Client"; Name="DisabledByDefault"; Value=0},
+        @{Path="HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.1\Server"; Name="DisabledByDefault"; Value=0},
+        @{Path="HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.2\Client"; Name="DisabledByDefault"; Value=0},
+        @{Path="HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.2\Server"; Name="DisabledByDefault"; Value=0},
+        @{Path="HKLM:\SOFTWARE\Microsoft\.NETFramework\v2.0.50727"; Name="SchUseStrongCrypto"; Value=1},
+        @{Path="HKLM:\SOFTWARE\Microsoft\.NETFramework\v2.0.50727"; Name="SystemDefaultTlsVersions"; Value=1},
+        @{Path="HKLM:\SOFTWARE\Microsoft\.NETFramework\v4.0.30319"; Name="SchUseStrongCrypto"; Value=1},
+        @{Path="HKLM:\SOFTWARE\Microsoft\.NETFramework\v4.0.30319"; Name="SystemDefaultTlsVersions"; Value=1},
+        @{Path="HKLM:\SOFTWARE\Wow6432Node\Microsoft\.NETFramework\v2.0.50727"; Name="SchUseStrongCrypto"; Value=1},
+        @{Path="HKLM:\SOFTWARE\Wow6432Node\Microsoft\.NETFramework\v2.0.50727"; Name="SystemDefaultTlsVersions"; Value=1},
+        @{Path="HKLM:\SOFTWARE\Wow6432Node\Microsoft\.NETFramework\v4.0.30319"; Name="SchUseStrongCrypto"; Value=1},
+        @{Path="HKLM:\SOFTWARE\Wow6432Node\Microsoft\.NETFramework\v4.0.30319"; Name="SystemDefaultTlsVersions"; Value=1}
+    )
+
+    foreach ($k in $keys) {
+        try {
+            if (-not (Test-Path $k.Path)) { New-Item -Path $k.Path -Force | Out-Null }
+            New-ItemProperty -Path $k.Path -Name $k.Name -Value $k.Value -PropertyType DWord -Force | Out-Null
+            Write-Host "OK : $($k.Path) -> $($k.Name)=$($k.Value)" -ForegroundColor Green
+        } catch {
+            Write-Host "Echec : $($k.Path) ($($_.Exception.Message))" -ForegroundColor Red
+        }
+    }
+
+    Write-Host "`n==============================================="
+    Write-Host "  Termine. REDEMARRAGE requis pour appliquer."
+    Write-Host "  Si ca ne marche toujours pas apres redemarrage"
+    Write-Host "  (PC jamais mis a jour depuis des annees) :"
+    Write-Host "  installer KB3140245 avant de refaire cette etape."
+    Write-Host "===============================================`n"
+
+    $r = Read-HostClean "Redemarrer maintenant ? (O/N)"
+    if ($r -match "^[oO]") { Restart-Computer -Force }
+}
+
 do {
     Clear-Host
     Write-Host "==============================================="
@@ -331,13 +390,15 @@ do {
     Write-Host "===============================================`n"
     Write-Host "  1. Optimisation (services + nettoyage disque)"
     Write-Host "  2. Reparation de l'image Windows (DISM)"
-    Write-Host "  3. Mise a niveau du systeme (Windows 10/11)`n"
+    Write-Host "  3. Mise a niveau du systeme (Windows 10/11)"
+    Write-Host "  4. Reparer l'acces TLS 1.1/1.2 (Windows 7/8/8.1)`n"
     Write-Host "  0. Quitter`n"
     $choix = Read-HostClean "Choix"
     switch ($choix) {
         "1" { Optimisation }
         "2" { MenuReparation }
         "3" { MiseANiveau }
+        "4" { FixTLS }
         "0" { Clear-ToolHistory; exit }
         default { Write-Host "Choix invalide."; Start-Sleep 1 }
     }
