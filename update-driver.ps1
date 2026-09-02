@@ -2,103 +2,110 @@
 
 <#
 .SYNOPSIS
-    Inventorie les pilotes Windows et installe les mises à jour
-    de pilotes proposées par Windows Update / Microsoft Update.
+    Inventorie et met à jour les pilotes Windows.
 
 .DESCRIPTION
-    Un pilote est considéré comme "obsolète" lorsqu'une mise à jour
-    correspondante est proposée par Microsoft Update.
+    - S'élève automatiquement en administrateur via l'UAC.
+    - Liste les pilotes installés.
+    - Recherche les mises à jour de pilotes proposées par Microsoft Update.
+    - Marque les mises à jour disponibles comme [OBSOLETE].
+    - Télécharge et installe chaque pilote.
+    - Génère des rapports CSV et un journal d'exécution.
 
-    Le script :
-      1. demande automatiquement les droits administrateur ;
-      2. inventorie les pilotes installés ;
-      3. recherche les mises à jour de pilotes ;
-      4. télécharge les mises à jour ;
-      5. installe chaque pilote séparément ;
-      6. génère des rapports CSV et un journal d'exécution.
-
-.NOTES
-    Compatible avec Windows PowerShell 5.1.
-    Une confirmation UAC reste obligatoire lors de l'élévation.
+.EXAMPLE
+    irm "https://raw.githubusercontent.com/AbasseTALL/itech-tool/main/Update-Drivers.ps1" | iex
 #>
 
 # =====================================================================
 # CONFIGURATION
 # =====================================================================
 
-# URL Raw du présent script dans votre dépôt GitHub public.
-$ScriptUrl = "https://raw.githubusercontent.com/AbasseTALL/itech-tool/main/Update-Drivers.ps1"
+$GitHubOwner      = "VOTRE-UTILISATEUR"
+$GitHubRepository = "itech-tool"
+$GitHubBranch     = "main"
+$GitHubScriptPath = "Update-Drivers.ps1"
 
-# Dossier dans lequel les rapports seront enregistrés.
-$ReportRoot = Join-Path $env:ProgramData "Windows-Driver-Updater"
+$ScriptUrl = "https://raw.githubusercontent.com/$GitHubOwner/$GitHubRepository/$GitHubBranch/$GitHubScriptPath"
 
-# Mettre à $true pour utiliser Microsoft Update.
+$ReportRoot = Join-Path $env:ProgramData "itech-tool\Driver-Updater"
+
+# Utiliser le catalogue Microsoft Update.
 $UseMicrosoftUpdate = $true
 
-# Le script ne redémarre pas automatiquement par défaut.
+# Redémarrer automatiquement si une mise à jour le demande.
 $AutomaticRestart = $false
 
+# Délai avant le redémarrage automatique.
+$RestartDelaySeconds = 60
+
 # =====================================================================
-# FONCTIONS GÉNÉRALES
+# PARAMÈTRES GÉNÉRAUX
+# =====================================================================
+
+$ErrorActionPreference = "Stop"
+$ProgressPreference = "SilentlyContinue"
+
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
+# =====================================================================
+# FONCTIONS
 # =====================================================================
 
 function Test-IsAdministrator {
-    $CurrentIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $Identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 
-    $Principal = New-Object Security.Principal.WindowsPrincipal(
-        $CurrentIdentity
-    )
+    $Principal = New-Object `
+        Security.Principal.WindowsPrincipal($Identity)
 
     return $Principal.IsInRole(
         [Security.Principal.WindowsBuiltInRole]::Administrator
     )
 }
 
-function Start-ElevatedRemoteScript {
+function Start-ElevatedScript {
     param(
         [Parameter(Mandatory)]
         [string]$Url
     )
 
-    if ($Url -match "VOTRE-UTILISATEUR") {
+    if ($GitHubOwner -eq "VOTRE-UTILISATEUR") {
         throw @"
-L'adresse GitHub n'a pas été configurée.
+Le propriétaire GitHub n'a pas été configuré.
 
-Modifiez la variable `$ScriptUrl au début du script :
+Modifiez cette ligne dans Update-Drivers.ps1 :
 
-https://raw.githubusercontent.com/VOTRE-UTILISATEUR/Windows-Driver-Updater/main/Update-Drivers.ps1
+`$GitHubOwner = "VOTRE-UTILISATEUR"
 "@
     }
 
-    if ($Url -notmatch "^https://raw\.githubusercontent\.com/") {
-        throw "L'URL configurée n'est pas une adresse GitHub Raw valide."
+    if ($Url -notmatch '^https://raw\.githubusercontent\.com/') {
+        throw "L'adresse du script n'est pas une URL GitHub Raw valide."
     }
 
     Write-Host ""
-    Write-Host "Des droits administrateur sont nécessaires." `
-        -ForegroundColor Yellow
-    Write-Host "Affichage de la demande UAC..." `
-        -ForegroundColor Yellow
+    Write-Host "[ADMINISTRATEUR REQUIS]" -ForegroundColor Yellow
+    Write-Host "Affichage de la demande UAC..." -ForegroundColor Yellow
 
-    # La nouvelle instance PowerShell retélécharge le script depuis GitHub.
-    $ElevatedCommand = @"
+    $EscapedUrl = $Url.Replace("'", "''")
+
+    $ElevatedCode = @"
 `$ErrorActionPreference = 'Stop'
+`$ProgressPreference = 'SilentlyContinue'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-`$Content = Invoke-RestMethod -Uri '$Url' -UseBasicParsing
-Invoke-Expression ([string]`$Content)
+`$ScriptContent = Invoke-RestMethod -Uri '$EscapedUrl' -UseBasicParsing
+Invoke-Expression ([string]`$ScriptContent)
 "@
 
-    # Encodage UTF-16LE attendu par powershell.exe -EncodedCommand.
     $EncodedCommand = [Convert]::ToBase64String(
-        [Text.Encoding]::Unicode.GetBytes($ElevatedCommand)
+        [Text.Encoding]::Unicode.GetBytes($ElevatedCode)
     )
 
-    $PowerShellPath = Join-Path `
-        $PSHOME `
-        "powershell.exe"
+    $PowerShellExe = Join-Path `
+        $env:SystemRoot `
+        "System32\WindowsPowerShell\v1.0\powershell.exe"
 
     Start-Process `
-        -FilePath $PowerShellPath `
+        -FilePath $PowerShellExe `
         -Verb RunAs `
         -ArgumentList @(
             "-NoLogo"
@@ -107,6 +114,18 @@ Invoke-Expression ([string]`$Content)
             "-EncodedCommand", $EncodedCommand
         ) |
         Out-Null
+}
+
+function Write-Section {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Title
+    )
+
+    Write-Host ""
+    Write-Host ("=" * 78) -ForegroundColor DarkCyan
+    Write-Host $Title -ForegroundColor Cyan
+    Write-Host ("=" * 78) -ForegroundColor DarkCyan
 }
 
 function Convert-DriverDate {
@@ -119,11 +138,11 @@ function Convert-DriverDate {
         return $null
     }
 
-    try {
-        if ($Date -is [datetime]) {
-            return $Date
-        }
+    if ($Date -is [datetime]) {
+        return $Date
+    }
 
+    try {
         return [Management.ManagementDateTimeConverter]::ToDateTime(
             [string]$Date
         )
@@ -138,23 +157,40 @@ function Convert-DriverDate {
     }
 }
 
+function Get-ComProperty {
+    param(
+        [Parameter(Mandatory)]
+        $InputObject,
+
+        [Parameter(Mandatory)]
+        [string]$PropertyName
+    )
+
+    try {
+        return $InputObject.$PropertyName
+    }
+    catch {
+        return $null
+    }
+}
+
 function Get-UpdateResultText {
     param(
         [int]$ResultCode
     )
 
     switch ($ResultCode) {
-        0 { return "Non commencé" }
+        0 { return "Non commence" }
         1 { return "En cours" }
-        2 { return "Réussi" }
-        3 { return "Réussi avec erreurs" }
-        4 { return "Échec" }
-        5 { return "Annulé" }
+        2 { return "Reussi" }
+        3 { return "Reussi avec erreurs" }
+        4 { return "Echec" }
+        5 { return "Annule" }
         default { return "Code inconnu : $ResultCode" }
     }
 }
 
-function Get-ResultColor {
+function Get-UpdateResultColor {
     param(
         [int]$ResultCode
     )
@@ -177,342 +213,357 @@ function Convert-HResultToHex {
     }
 
     try {
-        $UnsignedValue = [Convert]::ToUInt32(
-            ([int64]$HResult -band 0xFFFFFFFF)
-        )
-
-        return "0x{0:X8}" -f $UnsignedValue
+        $Value = [uint32]([int64]$HResult -band 0xFFFFFFFFL)
+        return "0x{0:X8}" -f $Value
     }
     catch {
         return [string]$HResult
     }
 }
 
-function Get-ComProperty {
+function Export-EmptyCsv {
     param(
         [Parameter(Mandatory)]
-        $Object,
+        [string]$Path,
 
         [Parameter(Mandatory)]
-        [string]$PropertyName
+        [string[]]$Columns
     )
 
+    $Header = ($Columns | ForEach-Object {
+        '"{0}"' -f $_.Replace('"', '""')
+    }) -join ","
+
+    Set-Content `
+        -Path $Path `
+        -Value $Header `
+        -Encoding UTF8
+}
+
+# =====================================================================
+# ÉLÉVATION ADMINISTRATEUR
+# =====================================================================
+
+if (-not (Test-IsAdministrator)) {
     try {
-        return $Object.$PropertyName
+        Start-ElevatedScript -Url $ScriptUrl
     }
     catch {
-        return $null
+        Write-Host ""
+        Write-Host "[ERREUR]" -ForegroundColor Red
+        Write-Host $_.Exception.Message -ForegroundColor Red
     }
+
+    return
 }
 
-function Write-Section {
-    param(
-        [Parameter(Mandatory)]
-        [string]$Title
-    )
+# =====================================================================
+# PRÉPARATION DES RAPPORTS
+# =====================================================================
 
-    Write-Host ""
-    Write-Host ("=" * 78) -ForegroundColor DarkCyan
-    Write-Host $Title -ForegroundColor Cyan
-    Write-Host ("=" * 78) -ForegroundColor DarkCyan
-}
+$ExecutionDate = Get-Date -Format "yyyy-MM-dd_HH-mm-ss"
+$ReportDirectory = Join-Path $ReportRoot $ExecutionDate
+
+New-Item `
+    -Path $ReportDirectory `
+    -ItemType Directory `
+    -Force |
+    Out-Null
+
+$InventoryReport = Join-Path `
+    $ReportDirectory `
+    "01-Pilotes-Installes.csv"
+
+$AvailableReport = Join-Path `
+    $ReportDirectory `
+    "02-Pilotes-Obsoletes.csv"
+
+$InstallationReport = Join-Path `
+    $ReportDirectory `
+    "03-Resultats-Installation.csv"
+
+$LogFile = Join-Path `
+    $ReportDirectory `
+    "Execution.log"
+
+$TranscriptStarted = $false
+$RestartRequired = $false
+$InstalledDrivers = @()
+$AvailableUpdates = @()
+$InstallationResults = @()
 
 # =====================================================================
 # PROGRAMME PRINCIPAL
 # =====================================================================
 
-function Invoke-DriverUpdater {
-    $PreviousErrorActionPreference = $ErrorActionPreference
-    $PreviousProgressPreference = $ProgressPreference
+try {
+    try {
+        Start-Transcript `
+            -Path $LogFile `
+            -Append |
+            Out-Null
 
-    $ErrorActionPreference = "Stop"
-    $ProgressPreference = "SilentlyContinue"
-
-    # -----------------------------------------------------------------
-    # Élévation administrative
-    # -----------------------------------------------------------------
-
-    if (-not (Test-IsAdministrator)) {
-        Start-ElevatedRemoteScript -Url $ScriptUrl
-        return
+        $TranscriptStarted = $true
+    }
+    catch {
+        Write-Warning "Le journal d'execution n'a pas pu etre demarre."
     }
 
-    # -----------------------------------------------------------------
-    # Préparation des rapports
-    # -----------------------------------------------------------------
+    Write-Section "ITECH-TOOL - MISE A JOUR DES PILOTES"
 
-    $ExecutionDate = Get-Date -Format "yyyy-MM-dd_HH-mm-ss"
-    $ReportDirectory = Join-Path $ReportRoot $ExecutionDate
+    Write-Host "Ordinateur  : $env:COMPUTERNAME"
+    Write-Host "Utilisateur : $env:USERDOMAIN\$env:USERNAME"
+    Write-Host "Execution   : $(Get-Date -Format 'dd/MM/yyyy HH:mm:ss')"
+    Write-Host "Privileges  : Administrateur" -ForegroundColor Green
+    Write-Host "Rapports    : $ReportDirectory"
 
-    New-Item `
-        -Path $ReportDirectory `
-        -ItemType Directory `
-        -Force |
-        Out-Null
+    # =================================================================
+    # 1. INVENTAIRE DES PILOTES
+    # =================================================================
 
-    $InventoryReport = Join-Path `
-        $ReportDirectory `
-        "01-Pilotes-Installés.csv"
+    Write-Section "1. PILOTES INSTALLES"
 
-    $AvailableReport = Join-Path `
-        $ReportDirectory `
-        "02-Pilotes-Obsolètes.csv"
+    Write-Host "Lecture des pilotes Plug-and-Play..." `
+        -ForegroundColor Gray
 
-    $InstallationReport = Join-Path `
-        $ReportDirectory `
-        "03-Résultats-Installation.csv"
-
-    $LogFile = Join-Path `
-        $ReportDirectory `
-        "Execution.log"
-
-    $TranscriptStarted = $false
-    $RestartRequired = $false
-
-    try {
-        try {
-            Start-Transcript `
-                -Path $LogFile `
-                -Append |
-                Out-Null
-
-            $TranscriptStarted = $true
-        }
-        catch {
-            Write-Warning "Le journal d'exécution n'a pas pu être démarré."
-        }
-
-        Write-Section "MISE À JOUR DES PILOTES WINDOWS"
-
-        Write-Host "Ordinateur       : $env:COMPUTERNAME"
-        Write-Host "Utilisateur      : $env:USERDOMAIN\$env:USERNAME"
-        Write-Host "Date             : $(Get-Date -Format 'dd/MM/yyyy HH:mm:ss')"
-        Write-Host "Mode             : Administrateur" -ForegroundColor Green
-        Write-Host "Rapports         : $ReportDirectory"
-
-        # =============================================================
-        # 1. INVENTAIRE DES PILOTES
-        # =============================================================
-
-        Write-Section "1. INVENTAIRE DES PILOTES INSTALLÉS"
-
-        Write-Host "Lecture des pilotes Plug-and-Play..." `
-            -ForegroundColor Gray
-
-        $InstalledDrivers = @(
-            Get-CimInstance `
-                -ClassName Win32_PnPSignedDriver `
-                -ErrorAction Stop |
-            Where-Object {
-                -not [string]::IsNullOrWhiteSpace($_.DeviceName)
-            } |
-            ForEach-Object {
-                [PSCustomObject]@{
-                    Peripherique = $_.DeviceName
-                    Fabricant    = $_.Manufacturer
-                    Fournisseur  = $_.DriverProviderName
-                    Classe       = $_.DeviceClass
-                    Version      = $_.DriverVersion
-                    DatePilote   = Convert-DriverDate $_.DriverDate
-                    FichierINF   = $_.InfName
-                    DeviceID     = $_.DeviceID
-                    Signe        = $_.IsSigned
-                    Statut       = "Installé"
-                }
-            } |
-            Sort-Object Peripherique, Version
-        )
-
-        if ($InstalledDrivers.Count -eq 0) {
-            Write-Warning "Aucun pilote Plug-and-Play n'a été trouvé."
-        }
-        else {
-            foreach ($Driver in $InstalledDrivers) {
-                Write-Host "[INSTALLÉ] " -NoNewline -ForegroundColor DarkGray
-                Write-Host $Driver.Peripherique -NoNewline
-                Write-Host " — $($Driver.Version)" -ForegroundColor Gray
+    $InstalledDrivers = @(
+        Get-CimInstance `
+            -ClassName Win32_PnPSignedDriver `
+            -ErrorAction Stop |
+        Where-Object {
+            -not [string]::IsNullOrWhiteSpace($_.DeviceName)
+        } |
+        ForEach-Object {
+            [PSCustomObject]@{
+                Peripherique = $_.DeviceName
+                Fabricant    = $_.Manufacturer
+                Fournisseur  = $_.DriverProviderName
+                Classe       = $_.DeviceClass
+                Version      = $_.DriverVersion
+                DatePilote   = Convert-DriverDate $_.DriverDate
+                FichierINF   = $_.InfName
+                DeviceID     = $_.DeviceID
+                Signe        = $_.IsSigned
+                Statut       = "Installe"
             }
-        }
+        } |
+        Sort-Object Peripherique, Version
+    )
 
+    foreach ($Driver in $InstalledDrivers) {
+        Write-Host "[INSTALLE] " `
+            -NoNewline `
+            -ForegroundColor DarkGray
+
+        Write-Host $Driver.Peripherique `
+            -NoNewline `
+            -ForegroundColor White
+
+        Write-Host " - Version $($Driver.Version)" `
+            -ForegroundColor Gray
+    }
+
+    if ($InstalledDrivers.Count -gt 0) {
         $InstalledDrivers |
             Export-Csv `
                 -Path $InventoryReport `
                 -NoTypeInformation `
                 -Encoding UTF8
+    }
+    else {
+        Export-EmptyCsv `
+            -Path $InventoryReport `
+            -Columns @(
+                "Peripherique",
+                "Fabricant",
+                "Fournisseur",
+                "Classe",
+                "Version",
+                "DatePilote",
+                "FichierINF",
+                "DeviceID",
+                "Signe",
+                "Statut"
+            )
+    }
 
-        Write-Host ""
-        Write-Host "$($InstalledDrivers.Count) pilote(s) inventorié(s)." `
-            -ForegroundColor Green
+    Write-Host ""
+    Write-Host "$($InstalledDrivers.Count) pilote(s) inventorie(s)." `
+        -ForegroundColor Green
 
-        # =============================================================
-        # 2. CONNEXION À WINDOWS UPDATE / MICROSOFT UPDATE
-        # =============================================================
+    # =================================================================
+    # 2. CONNEXION AU SERVICE DE MISE À JOUR
+    # =================================================================
 
-        Write-Section "2. CONNEXION AU SERVICE DE MISE À JOUR"
+    Write-Section "2. CONNEXION AU SERVICE DE MISE A JOUR"
 
-        Write-Host "Création de la session Windows Update..." `
-            -ForegroundColor Gray
+    $UpdateSession = New-Object `
+        -ComObject "Microsoft.Update.Session"
 
-        $UpdateSession = New-Object `
-            -ComObject "Microsoft.Update.Session"
+    $UpdateSession.ClientApplicationID = "itech-tool Driver Updater"
 
-        $UpdateSession.ClientApplicationID = "Windows-Driver-Updater"
+    $UpdateSearcher = $UpdateSession.CreateUpdateSearcher()
+    $UpdateSource = "Windows Update"
 
-        $UpdateSearcher = $UpdateSession.CreateUpdateSearcher()
-        $UpdateSource = "Windows Update"
+    if ($UseMicrosoftUpdate) {
+        try {
+            Write-Host "Activation de Microsoft Update..." `
+                -ForegroundColor Gray
 
-        if ($UseMicrosoftUpdate) {
+            $ServiceManager = New-Object `
+                -ComObject "Microsoft.Update.ServiceManager"
+
+            $ServiceManager.ClientApplicationID = `
+                "itech-tool Driver Updater"
+
+            $MicrosoftUpdateServiceId = `
+                "7971f918-a847-4430-9279-4a52d1efe18d"
+
             try {
-                Write-Host "Activation de Microsoft Update..." `
-                    -ForegroundColor Gray
-
-                $ServiceManager = New-Object `
-                    -ComObject "Microsoft.Update.ServiceManager"
-
-                $ServiceManager.ClientApplicationID = "Windows-Driver-Updater"
-
-                $MicrosoftUpdateServiceId = `
-                    "7971f918-a847-4430-9279-4a52d1efe18d"
-
-                $MicrosoftUpdateService = $ServiceManager.AddService2(
+                $null = $ServiceManager.AddService2(
                     $MicrosoftUpdateServiceId,
                     7,
                     ""
                 )
-
-                # ssOthers = 3 : utilisation d'un service spécifique.
-                $UpdateSearcher.ServerSelection = 3
-                $UpdateSearcher.ServiceID = $MicrosoftUpdateServiceId
-
-                $UpdateSource = "Microsoft Update"
-
-                Write-Host "Source : Microsoft Update" `
-                    -ForegroundColor Green
             }
             catch {
-                Write-Warning @"
-Microsoft Update n'a pas pu être activé :
-$($_.Exception.Message)
-
-Le script utilisera Windows Update.
-"@
-
-                # ssWindowsUpdate = 2
-                $UpdateSearcher.ServerSelection = 2
-                $UpdateSource = "Windows Update"
+                # Le service peut déjà être enregistré.
+                Write-Host "Microsoft Update est deja enregistre." `
+                    -ForegroundColor DarkGray
             }
-        }
-        else {
-            $UpdateSearcher.ServerSelection = 2
-            $UpdateSource = "Windows Update"
 
-            Write-Host "Source : Windows Update" `
+            # ssOthers = 3
+            $UpdateSearcher.ServerSelection = 3
+            $UpdateSearcher.ServiceID = $MicrosoftUpdateServiceId
+
+            $UpdateSource = "Microsoft Update"
+
+            Write-Host "Source selectionnee : Microsoft Update" `
                 -ForegroundColor Green
         }
+        catch {
+            Write-Warning @"
+Microsoft Update n'a pas pu etre active.
+Utilisation de Windows Update.
 
-        # =============================================================
-        # 3. RECHERCHE DES MISES À JOUR
-        # =============================================================
+Detail : $($_.Exception.Message)
+"@
 
-        Write-Section "3. RECHERCHE DES PILOTES OBSOLÈTES"
-
-        Write-Host "Recherche en cours auprès de $UpdateSource..." `
-            -ForegroundColor Yellow
-
-        $SearchCriteria = "IsInstalled=0 and IsHidden=0 and Type='Driver'"
-
-        $SearchResult = $UpdateSearcher.Search($SearchCriteria)
-        $UpdateCount = $SearchResult.Updates.Count
-
-        $AvailableUpdates = @()
-
-        if ($UpdateCount -eq 0) {
-            Write-Host ""
-            Write-Host "[À JOUR] " -NoNewline -ForegroundColor Green
-            Write-Host "Aucune mise à jour de pilote n'est proposée par $UpdateSource."
-
-            @() |
-                Select-Object `
-                    Numero,
-                    Pilote,
-                    Fabricant,
-                    Modele,
-                    Classe,
-                    VersionProposee,
-                    DateVersion,
-                    KB,
-                    Statut |
-                Export-Csv `
-                    -Path $AvailableReport `
-                    -NoTypeInformation `
-                    -Encoding UTF8
-
-            Write-Section "RÉSUMÉ"
-
-            Write-Host "Pilotes inventoriés        : $($InstalledDrivers.Count)"
-            Write-Host "Pilotes obsolètes détectés : 0" -ForegroundColor Green
-            Write-Host "Installation nécessaire    : Non" -ForegroundColor Green
-            Write-Host ""
-            Write-Host "Rapports : $ReportDirectory" -ForegroundColor Cyan
-
-            return
+            # ssWindowsUpdate = 2
+            $UpdateSearcher.ServerSelection = 2
+            $UpdateSource = "Windows Update"
         }
+    }
+    else {
+        $UpdateSearcher.ServerSelection = 2
 
+        Write-Host "Source selectionnee : Windows Update" `
+            -ForegroundColor Green
+    }
+
+    # =================================================================
+    # 3. RECHERCHE DES PILOTES OBSOLÈTES
+    # =================================================================
+
+    Write-Section "3. RECHERCHE DES PILOTES OBSOLETES"
+
+    Write-Host "Recherche en cours aupres de $UpdateSource..." `
+        -ForegroundColor Yellow
+
+    $SearchCriteria = `
+        "IsInstalled=0 and IsHidden=0 and Type='Driver'"
+
+    $SearchResult = $UpdateSearcher.Search($SearchCriteria)
+    $UpdateCount = $SearchResult.Updates.Count
+
+    if ($UpdateCount -eq 0) {
         Write-Host ""
-        Write-Host "$UpdateCount mise(s) à jour de pilote détectée(s)." `
+        Write-Host "[A JOUR] " `
+            -NoNewline `
+            -ForegroundColor Green
+
+        Write-Host "Aucune mise a jour de pilote n'est disponible."
+
+        Export-EmptyCsv `
+            -Path $AvailableReport `
+            -Columns @(
+                "Numero",
+                "Pilote",
+                "Fabricant",
+                "Modele",
+                "Classe",
+                "VersionProposee",
+                "DateVersion",
+                "KB",
+                "Identite",
+                "Revision",
+                "Statut"
+            )
+    }
+    else {
+        Write-Host ""
+        Write-Host "$UpdateCount mise(s) a jour disponible(s)." `
             -ForegroundColor Yellow
-        Write-Host ""
 
         for ($Index = 0; $Index -lt $UpdateCount; $Index++) {
             $Update = $SearchResult.Updates.Item($Index)
 
-            $DriverManufacturer = Get-ComProperty `
-                -Object $Update `
+            $Manufacturer = Get-ComProperty `
+                -InputObject $Update `
                 -PropertyName "DriverManufacturer"
 
-            $DriverModel = Get-ComProperty `
-                -Object $Update `
+            $Model = Get-ComProperty `
+                -InputObject $Update `
                 -PropertyName "DriverModel"
 
-            $DriverClass = Get-ComProperty `
-                -Object $Update `
+            $Class = Get-ComProperty `
+                -InputObject $Update `
                 -PropertyName "DriverClass"
 
-            $DriverVersion = Get-ComProperty `
-                -Object $Update `
+            $ProposedVersion = Get-ComProperty `
+                -InputObject $Update `
                 -PropertyName "DriverVerVersion"
 
-            $DriverDate = Get-ComProperty `
-                -Object $Update `
+            $ProposedDate = Get-ComProperty `
+                -InputObject $Update `
                 -PropertyName "DriverVerDate"
 
-            Write-Host "[OBSOLÈTE] " -NoNewline -ForegroundColor Yellow
+            Write-Host ""
+            Write-Host "[OBSOLETE] " `
+                -NoNewline `
+                -ForegroundColor Yellow
+
             Write-Host $Update.Title -ForegroundColor White
 
-            if ($DriverModel) {
-                Write-Host "            Modèle  : $DriverModel" `
+            if ($Manufacturer) {
+                Write-Host "           Fabricant : $Manufacturer" `
                     -ForegroundColor DarkGray
             }
 
-            if ($DriverVersion) {
-                Write-Host "            Version : $DriverVersion" `
+            if ($Model) {
+                Write-Host "           Modele    : $Model" `
+                    -ForegroundColor DarkGray
+            }
+
+            if ($ProposedVersion) {
+                Write-Host "           Version   : $ProposedVersion" `
                     -ForegroundColor DarkGray
             }
 
             $AvailableUpdates += [PSCustomObject]@{
                 Numero           = $Index + 1
                 Pilote           = $Update.Title
-                Fabricant        = $DriverManufacturer
-                Modele           = $DriverModel
-                Classe           = $DriverClass
-                VersionProposee  = $DriverVersion
-                DateVersion      = $DriverDate
+                Fabricant        = $Manufacturer
+                Modele           = $Model
+                Classe           = $Class
+                VersionProposee  = $ProposedVersion
+                DateVersion      = $ProposedDate
                 KB               = $Update.KBArticleIDs -join ","
                 Identite         = $Update.Identity.UpdateID
                 Revision         = $Update.Identity.RevisionNumber
                 DejaTelecharge   = $Update.IsDownloaded
                 RedemarrageAvant = $Update.RebootRequired
-                Statut           = "Obsolète - mise à jour disponible"
+                Statut           = "Obsolete - mise a jour disponible"
             }
         }
 
@@ -521,17 +572,17 @@ Le script utilisera Windows Update.
                 -Path $AvailableReport `
                 -NoTypeInformation `
                 -Encoding UTF8
+    }
 
-        # =============================================================
-        # 4. PRÉPARATION ET TÉLÉCHARGEMENT
-        # =============================================================
+    # =================================================================
+    # 4. TÉLÉCHARGEMENT
+    # =================================================================
 
-        Write-Section "4. TÉLÉCHARGEMENT DES MISES À JOUR"
+    if ($UpdateCount -gt 0) {
+        Write-Section "4. TELECHARGEMENT DES PILOTES"
 
         $DownloadCollection = New-Object `
             -ComObject "Microsoft.Update.UpdateColl"
-
-        $SkippedUpdates = @()
 
         for ($Index = 0; $Index -lt $UpdateCount; $Index++) {
             $Update = $SearchResult.Updates.Item($Index)
@@ -543,18 +594,22 @@ Le script utilisera Windows Update.
 
                 [void]$DownloadCollection.Add($Update)
 
-                Write-Host "[PRÉPARÉ] " -NoNewline -ForegroundColor Cyan
+                Write-Host "[PREPARE] " `
+                    -NoNewline `
+                    -ForegroundColor Cyan
+
                 Write-Host $Update.Title
             }
             catch {
-                Write-Host "[IGNORÉ] " -NoNewline -ForegroundColor Red
+                Write-Host "[IGNORE] " `
+                    -NoNewline `
+                    -ForegroundColor Red
+
                 Write-Host $Update.Title
 
-                Write-Warning $_.Exception.Message
-
-                $SkippedUpdates += [PSCustomObject]@{
+                $InstallationResults += [PSCustomObject]@{
                     Pilote                = $Update.Title
-                    Statut                = "Ignoré"
+                    Statut                = "Ignore"
                     Code                  = $null
                     HResult               = Convert-HResultToHex `
                                                 $_.Exception.HResult
@@ -566,40 +621,37 @@ Le script utilisera Windows Update.
         }
 
         if ($DownloadCollection.Count -eq 0) {
-            throw "Aucune mise à jour n'a pu être préparée."
+            throw "Aucune mise a jour n'a pu etre preparee."
         }
 
         Write-Host ""
-        Write-Host "Téléchargement de $($DownloadCollection.Count) pilote(s)..." `
+        Write-Host "Telechargement de $($DownloadCollection.Count) pilote(s)..." `
             -ForegroundColor Yellow
 
         $Downloader = $UpdateSession.CreateUpdateDownloader()
         $Downloader.Updates = $DownloadCollection
 
         $DownloadResult = $Downloader.Download()
-        $DownloadStatus = Get-UpdateResultText $DownloadResult.ResultCode
-        $DownloadColor = Get-ResultColor $DownloadResult.ResultCode
+        $DownloadCode = [int]$DownloadResult.ResultCode
+        $DownloadText = Get-UpdateResultText $DownloadCode
+        $DownloadColor = Get-UpdateResultColor $DownloadCode
 
-        Write-Host "Résultat du téléchargement : " -NoNewline
-        Write-Host $DownloadStatus -ForegroundColor $DownloadColor
+        Write-Host "Telechargement : " -NoNewline
+        Write-Host $DownloadText -ForegroundColor $DownloadColor
 
-        # Les codes 2 et 3 permettent de poursuivre :
-        # 2 = réussite ; 3 = réussite avec erreurs.
-        if ($DownloadResult.ResultCode -notin 2, 3) {
+        if ($DownloadCode -notin 2, 3) {
             throw @"
-Le téléchargement des pilotes a échoué.
-Code de résultat : $($DownloadResult.ResultCode)
-Statut           : $DownloadStatus
+Le telechargement des pilotes a echoue.
+Code   : $DownloadCode
+Statut : $DownloadText
 "@
         }
 
         # =============================================================
-        # 5. INSTALLATION INDIVIDUELLE
+        # 5. INSTALLATION
         # =============================================================
 
-        Write-Section "5. INSTALLATION DES PILOTES OBSOLÈTES"
-
-        $InstallationResults = @($SkippedUpdates)
+        Write-Section "5. INSTALLATION DES PILOTES OBSOLETES"
 
         for (
             $Index = 0;
@@ -607,25 +659,29 @@ Statut           : $DownloadStatus
             $Index++
         ) {
             $Update = $DownloadCollection.Item($Index)
-            $CurrentNumber = $Index + 1
+            $Number = $Index + 1
 
             Write-Host ""
-            Write-Host "[$CurrentNumber/$($DownloadCollection.Count)] " `
+            Write-Host "[$Number/$($DownloadCollection.Count)] " `
                 -NoNewline `
                 -ForegroundColor Cyan
+
+            Write-Host "[MISE A JOUR] " `
+                -NoNewline `
+                -ForegroundColor Yellow
 
             Write-Host $Update.Title
 
             if (-not $Update.IsDownloaded) {
-                Write-Host "[ÉCHEC] " -NoNewline -ForegroundColor Red
-                Write-Host "Le pilote n'a pas été téléchargé."
+                Write-Host "[ECHEC] Pilote non telecharge." `
+                    -ForegroundColor Red
 
                 $InstallationResults += [PSCustomObject]@{
                     Pilote                = $Update.Title
-                    Statut                = "Échec du téléchargement"
+                    Statut                = "Echec du telechargement"
                     Code                  = $null
                     HResult               = $null
-                    Message               = "Le fichier n'est pas téléchargé."
+                    Message               = "Le pilote n'a pas ete telecharge."
                     RedemarrageNecessaire = $false
                     Date                  = Get-Date
                 }
@@ -642,20 +698,26 @@ Statut           : $DownloadStatus
                 $Installer = $UpdateSession.CreateUpdateInstaller()
                 $Installer.Updates = $SingleUpdateCollection
 
-                Write-Host "Installation..." -ForegroundColor Gray
+                Write-Host "Installation en cours..." `
+                    -ForegroundColor Gray
 
                 $InstallResult = $Installer.Install()
+
                 $ResultCode = [int]$InstallResult.ResultCode
                 $ResultText = Get-UpdateResultText $ResultCode
-                $ResultColor = Get-ResultColor $ResultCode
+                $ResultColor = Get-UpdateResultColor $ResultCode
+
+                $HResult = $null
 
                 try {
-                    $IndividualResult = $InstallResult.GetUpdateResult(0)
+                    $IndividualResult = `
+                        $InstallResult.GetUpdateResult(0)
+
                     $HResult = $IndividualResult.HResult
                 }
                 catch {
                     $HResult = Get-ComProperty `
-                        -Object $InstallResult `
+                        -InputObject $InstallResult `
                         -PropertyName "HResult"
                 }
 
@@ -670,7 +732,7 @@ Statut           : $DownloadStatus
                 Write-Host $Update.Title
 
                 if ($InstallResult.RebootRequired) {
-                    Write-Host "            Redémarrage nécessaire" `
+                    Write-Host "Redemarrage necessaire." `
                         -ForegroundColor Yellow
                 }
 
@@ -685,14 +747,17 @@ Statut           : $DownloadStatus
                 }
             }
             catch {
-                Write-Host "[ÉCHEC] " -NoNewline -ForegroundColor Red
+                Write-Host "[ECHEC] " `
+                    -NoNewline `
+                    -ForegroundColor Red
+
                 Write-Host $Update.Title
 
                 Write-Warning $_.Exception.Message
 
                 $InstallationResults += [PSCustomObject]@{
                     Pilote                = $Update.Title
-                    Statut                = "Échec"
+                    Statut                = "Echec"
                     Code                  = $null
                     HResult               = Convert-HResultToHex `
                                                 $_.Exception.HResult
@@ -702,122 +767,160 @@ Statut           : $DownloadStatus
                 }
             }
         }
+    }
 
+    # =================================================================
+    # 6. RAPPORT D'INSTALLATION
+    # =================================================================
+
+    if ($InstallationResults.Count -gt 0) {
         $InstallationResults |
             Export-Csv `
                 -Path $InstallationReport `
                 -NoTypeInformation `
                 -Encoding UTF8
+    }
+    else {
+        Export-EmptyCsv `
+            -Path $InstallationReport `
+            -Columns @(
+                "Pilote",
+                "Statut",
+                "Code",
+                "HResult",
+                "Message",
+                "RedemarrageNecessaire",
+                "Date"
+            )
+    }
 
-        # =============================================================
-        # 6. RÉSUMÉ
-        # =============================================================
+    # =================================================================
+    # 7. RÉSUMÉ
+    # =================================================================
 
-        Write-Section "6. RÉSUMÉ"
+    Write-Section "6. RESUME"
 
-        $SuccessCount = @(
-            $InstallationResults |
-            Where-Object {
-                $_.Code -eq 2
-            }
-        ).Count
+    $SuccessCount = @(
+        $InstallationResults |
+        Where-Object {
+            $_.Code -eq 2
+        }
+    ).Count
 
-        $PartialSuccessCount = @(
-            $InstallationResults |
-            Where-Object {
-                $_.Code -eq 3
-            }
-        ).Count
+    $PartialCount = @(
+        $InstallationResults |
+        Where-Object {
+            $_.Code -eq 3
+        }
+    ).Count
 
-        $FailureCount = @(
-            $InstallationResults |
-            Where-Object {
-                $_.Statut -in @(
-                    "Échec",
-                    "Échec du téléchargement",
-                    "Ignoré"
-                ) -or $_.Code -eq 4
-            }
-        ).Count
+    $FailureCount = @(
+        $InstallationResults |
+        Where-Object {
+            $_.Code -eq 4 -or
+            $_.Statut -in @(
+                "Echec",
+                "Echec du telechargement",
+                "Ignore"
+            )
+        }
+    ).Count
 
-        Write-Host "Pilotes installés détectés : $($InstalledDrivers.Count)"
-        Write-Host "Mises à jour détectées     : $UpdateCount" `
-            -ForegroundColor Yellow
-        Write-Host "Installations réussies     : $SuccessCount" `
-            -ForegroundColor Green
-        Write-Host "Réussites avec erreurs     : $PartialSuccessCount" `
-            -ForegroundColor Yellow
-        Write-Host "Échecs ou pilotes ignorés  : $FailureCount" `
-            -ForegroundColor $(if ($FailureCount) { "Red" } else { "Green" })
-
-        Write-Host ""
-        Write-Host "Rapport des pilotes installés :" `
-            -ForegroundColor Cyan
-        Write-Host "  $InventoryReport"
-
-        Write-Host "Rapport des pilotes obsolètes :" `
-            -ForegroundColor Cyan
-        Write-Host "  $AvailableReport"
-
-        Write-Host "Rapport des installations :" `
-            -ForegroundColor Cyan
-        Write-Host "  $InstallationReport"
-
-        Write-Host "Journal d'exécution :" `
-            -ForegroundColor Cyan
-        Write-Host "  $LogFile"
-
-        if ($RestartRequired) {
-            Write-Host ""
-            Write-Host "[REDÉMARRAGE NÉCESSAIRE]" `
-                -ForegroundColor Yellow
-
-            if ($AutomaticRestart) {
-                Write-Host "Redémarrage automatique dans 30 secondes..." `
-                    -ForegroundColor Yellow
-
-                shutdown.exe /r /t 30 /c `
-                    "Redémarrage requis après la mise à jour des pilotes."
-            }
-            else {
-                Write-Host @"
-Un ou plusieurs pilotes nécessitent un redémarrage.
-Le redémarrage automatique est désactivé.
-"@ -ForegroundColor Yellow
-            }
+    Write-Host "Pilotes inventories      : $($InstalledDrivers.Count)"
+    Write-Host "Pilotes obsoletes        : $UpdateCount" `
+        -ForegroundColor $(if ($UpdateCount -gt 0) {
+            "Yellow"
         }
         else {
-            Write-Host ""
-            Write-Host "Aucun redémarrage demandé." `
-                -ForegroundColor Green
+            "Green"
+        })
+
+    Write-Host "Installations reussies   : $SuccessCount" `
+        -ForegroundColor Green
+
+    Write-Host "Reussies avec erreurs    : $PartialCount" `
+        -ForegroundColor $(if ($PartialCount -gt 0) {
+            "Yellow"
+        }
+        else {
+            "Green"
+        })
+
+    Write-Host "Echecs ou pilotes ignores: $FailureCount" `
+        -ForegroundColor $(if ($FailureCount -gt 0) {
+            "Red"
+        }
+        else {
+            "Green"
+        })
+
+    Write-Host ""
+    Write-Host "Rapport des pilotes installes :" `
+        -ForegroundColor Cyan
+    Write-Host "  $InventoryReport"
+
+    Write-Host "Rapport des pilotes obsoletes :" `
+        -ForegroundColor Cyan
+    Write-Host "  $AvailableReport"
+
+    Write-Host "Rapport d'installation :" `
+        -ForegroundColor Cyan
+    Write-Host "  $InstallationReport"
+
+    Write-Host "Journal d'execution :" `
+        -ForegroundColor Cyan
+    Write-Host "  $LogFile"
+
+    # =================================================================
+    # 8. REDÉMARRAGE
+    # =================================================================
+
+    if ($RestartRequired) {
+        Write-Host ""
+        Write-Host "[REDEMARRAGE NECESSAIRE]" `
+            -ForegroundColor Yellow
+
+        if ($AutomaticRestart) {
+            Write-Host @"
+L'ordinateur redemarrera dans $RestartDelaySeconds seconde(s).
+Pour annuler : shutdown /a
+"@ -ForegroundColor Yellow
+
+            shutdown.exe `
+                /r `
+                /t $RestartDelaySeconds `
+                /c "Redemarrage requis apres la mise a jour des pilotes."
+        }
+        else {
+            Write-Host @"
+Un ou plusieurs pilotes necessitent un redemarrage.
+Le redemarrage automatique est desactive.
+"@ -ForegroundColor Yellow
         }
     }
-    catch {
+    else {
         Write-Host ""
-        Write-Host "[ERREUR CRITIQUE]" -ForegroundColor Red
-        Write-Host $_.Exception.Message -ForegroundColor Red
-
-        Write-Host ""
-        Write-Host "Consultez le journal :" -ForegroundColor Yellow
-        Write-Host $LogFile
-    }
-    finally {
-        if ($TranscriptStarted) {
-            try {
-                Stop-Transcript | Out-Null
-            }
-            catch {
-                # Le transcript était peut-être déjà arrêté.
-            }
-        }
-
-        $ErrorActionPreference = $PreviousErrorActionPreference
-        $ProgressPreference = $PreviousProgressPreference
+        Write-Host "Aucun redemarrage n'est necessaire." `
+            -ForegroundColor Green
     }
 }
+catch {
+    Write-Host ""
+    Write-Host "[ERREUR CRITIQUE]" -ForegroundColor Red
+    Write-Host $_.Exception.Message -ForegroundColor Red
 
-# =====================================================================
-# DÉMARRAGE
-# =====================================================================
-
-Invoke-DriverUpdater
+    Write-Host ""
+    Write-Host "Journal disponible dans :" `
+        -ForegroundColor Yellow
+    Write-Host $LogFile
+}
+finally {
+    if ($TranscriptStarted) {
+        try {
+            Stop-Transcript | Out-Null
+        }
+        catch {
+            # Le transcript est peut-être déjà arrêté.
+        }
+    }
+}
