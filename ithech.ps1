@@ -207,10 +207,15 @@ function Get-WindowsIso {
     Write-Host "Telechargement de l'ISO (plusieurs Go, patience)..." -ForegroundColor Yellow
     Write-Host "$url"
     try {
-        (New-Object Net.WebClient).DownloadFile($url, $isoPath)
+        Start-BitsTransfer -Source $url -Destination $isoPath -Description "Telechargement Windows $WinVersion" -ErrorAction Stop
     } catch {
-        Write-Host "Echec du telechargement." -ForegroundColor Red
-        return $null
+        Write-Host "BITS indisponible, telechargement sans barre de progression..." -ForegroundColor Yellow
+        try {
+            (New-Object Net.WebClient).DownloadFile($url, $isoPath)
+        } catch {
+            Write-Host "Echec du telechargement." -ForegroundColor Red
+            return $null
+        }
     }
     return $isoPath
 }
@@ -383,6 +388,55 @@ function FixTLS {
     if ($r -match "^[oO]") { Restart-Computer -Force }
 }
 
+function InfosSysteme {
+    Clear-Host
+    Write-Host "===============================================" -ForegroundColor Cyan
+    Write-Host "  ITHECH - Informations systeme" -ForegroundColor Cyan
+    Write-Host "===============================================`n"
+
+    $os = Get-CimInstance Win32_OperatingSystem
+    $cpu = Get-CimInstance Win32_Processor
+    $cs = Get-CimInstance Win32_ComputerSystem
+
+    Write-Host "SYSTEME" -ForegroundColor Yellow
+    Write-Host "  OS             : $($os.Caption) ($($os.OSArchitecture))"
+    Write-Host "  Version/Build  : $($os.Version) (Build $($os.BuildNumber))"
+    Write-Host "  Machine        : $($cs.Manufacturer) $($cs.Model)"
+
+    Write-Host "`nPROCESSEUR" -ForegroundColor Yellow
+    Write-Host "  Modele         : $($cpu.Name.Trim())"
+    Write-Host "  Coeurs         : $($cpu.NumberOfCores) coeurs / $($cpu.NumberOfLogicalProcessors) logiques"
+
+    Write-Host "`nMEMOIRE" -ForegroundColor Yellow
+    $ramGB = [math]::Round($cs.TotalPhysicalMemory / 1GB, 1)
+    Write-Host "  RAM installee  : $ramGB Go"
+
+    Write-Host "`nDISQUE" -ForegroundColor Yellow
+    Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3" | ForEach-Object {
+        $totalGB = [math]::Round($_.Size / 1GB, 1)
+        $freeGB = [math]::Round($_.FreeSpace / 1GB, 1)
+        Write-Host "  $($_.DeviceID)  $freeGB Go libres / $totalGB Go au total"
+    }
+
+    Write-Host "`nCOMPATIBILITE WINDOWS 11" -ForegroundColor Yellow
+    try {
+        $tpm = Get-Tpm -ErrorAction Stop
+        Write-Host "  TPM            : present=$($tpm.TpmPresent), actif=$($tpm.TpmEnabled), version=$($tpm.ManufacturerVersion)"
+    } catch {
+        Write-Host "  TPM            : non detectable (normal sur Windows 7/8)"
+    }
+    try {
+        $sb = Confirm-SecureBootUEFI -ErrorAction Stop
+        Write-Host "  Mode demarrage : UEFI"
+        Write-Host "  Secure Boot    : $(if ($sb) { 'Actif' } else { 'Present mais desactive dans le BIOS' })"
+    } catch {
+        Write-Host "  Mode demarrage : Legacy / BIOS (ou non determinable)"
+        Write-Host "  Secure Boot    : non disponible"
+    }
+
+    Read-HostClean "`nAppuie sur Entree pour continuer"
+}
+
 do {
     Clear-Host
     Write-Host "==============================================="
@@ -391,7 +445,8 @@ do {
     Write-Host "  1. Optimisation (services + nettoyage disque)"
     Write-Host "  2. Reparation de l'image Windows (DISM)"
     Write-Host "  3. Mise a niveau du systeme (Windows 10/11)"
-    Write-Host "  4. Reparer l'acces TLS 1.1/1.2 (Windows 7/8/8.1)`n"
+    Write-Host "  4. Reparer l'acces TLS 1.1/1.2 (Windows 7/8/8.1)"
+    Write-Host "  5. Informations systeme (OS, RAM, CPU...)`n"
     Write-Host "  0. Quitter`n"
     $choix = Read-HostClean "Choix"
     switch ($choix) {
@@ -399,6 +454,7 @@ do {
         "2" { MenuReparation }
         "3" { MiseANiveau }
         "4" { FixTLS }
+        "5" { InfosSysteme }
         "0" { Clear-ToolHistory; exit }
         default { Write-Host "Choix invalide."; Start-Sleep 1 }
     }
