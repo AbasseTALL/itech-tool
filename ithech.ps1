@@ -388,6 +388,50 @@ function FixTLS {
     if ($r -match "^[oO]") { Restart-Computer -Force }
 }
 
+function Get-WindowsActivation {
+    try {
+        $result = cscript //nologo "$env:windir\system32\slmgr.vbs" /xpr 2>$null
+        $text = ($result -join " ")
+        if ($text -match "permanently activated") {
+            return "Active - licence PERMANENTE"
+        } elseif ($text -match "will expire on (.+?)\.") {
+            return "Active - licence EN VOLUME/periodique (renouvellement : $($matches[1]))"
+        } elseif ($text -match "notification") {
+            return "NON activee"
+        } else {
+            return "Statut indetermine"
+        }
+    } catch {
+        return "Impossible a verifier"
+    }
+}
+
+function Get-OfficeActivation {
+    $osppPaths = @(
+        "$env:ProgramFiles\Microsoft Office\Office16\ospp.vbs",
+        "${env:ProgramFiles(x86)}\Microsoft Office\Office16\ospp.vbs",
+        "$env:ProgramFiles\Microsoft Office\Office15\ospp.vbs",
+        "${env:ProgramFiles(x86)}\Microsoft Office\Office15\ospp.vbs"
+    )
+    $osppPath = $osppPaths | Where-Object { Test-Path $_ -ErrorAction SilentlyContinue } | Select-Object -First 1
+    if (-not $osppPath) { return "Non installe (ou non detecte)" }
+
+    try {
+        $result = cscript //nologo $osppPath /dstatus 2>$null
+        $text = ($result -join "`n")
+        if ($text -match "LICENSE STATUS.*LICENSED") {
+            if ($text -match "KMS") { return "Active - licence EN VOLUME (KMS, periodique)" }
+            elseif ($text -match "RETAIL") { return "Active - licence RETAIL (permanente)" }
+            elseif ($text -match "OEM") { return "Active - licence OEM (permanente)" }
+            else { return "Active (type non precise)" }
+        } else {
+            return "NON activee ou etat indetermine"
+        }
+    } catch {
+        return "Impossible a verifier"
+    }
+}
+
 function InfosSysteme {
     Clear-Host
     Write-Host "===============================================" -ForegroundColor Cyan
@@ -432,6 +476,32 @@ function InfosSysteme {
     } catch {
         Write-Host "  Mode demarrage : Legacy / BIOS (ou non determinable)"
         Write-Host "  Secure Boot    : non disponible"
+    }
+
+    Write-Host "`nACTIVATION" -ForegroundColor Yellow
+    Write-Host "  Windows        : $(Get-WindowsActivation)"
+    Write-Host "  Office         : $(Get-OfficeActivation)"
+
+    $retry = Read-HostClean "`nTenter une (re)activation avec la licence deja configuree sur ce PC ? (O/N)"
+    if ($retry -match "^[oO]") {
+        Write-Host "`nActivation Windows..."
+        cscript //nologo "$env:windir\system32\slmgr.vbs" /ato
+        Write-Host "`nActivation Office..."
+        $osppPaths = @(
+            "$env:ProgramFiles\Microsoft Office\Office16\ospp.vbs",
+            "${env:ProgramFiles(x86)}\Microsoft Office\Office16\ospp.vbs",
+            "$env:ProgramFiles\Microsoft Office\Office15\ospp.vbs",
+            "${env:ProgramFiles(x86)}\Microsoft Office\Office15\ospp.vbs"
+        )
+        $osppPath = $osppPaths | Where-Object { Test-Path $_ -ErrorAction SilentlyContinue } | Select-Object -First 1
+        if ($osppPath) {
+            cscript //nologo $osppPath /act
+        } else {
+            Write-Host "Office non detecte, etape ignoree."
+        }
+        Write-Host "`nNouveau statut :"
+        Write-Host "  Windows        : $(Get-WindowsActivation)"
+        Write-Host "  Office         : $(Get-OfficeActivation)"
     }
 
     Read-HostClean "`nAppuie sur Entree pour continuer"
