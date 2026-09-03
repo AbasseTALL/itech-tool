@@ -504,29 +504,33 @@ function InfosSysteme {
     }
 
     Write-Host "`nACTIVATION" -ForegroundColor Yellow
-    Write-Host "  Windows        : $(Get-WindowsActivation)"
-    Write-Host "  Office         : $(Get-OfficeActivation)"
+    $winAct = Get-WindowsActivation
+    $offAct = Get-OfficeActivation
+    Write-Host "  Windows        : $winAct"
+    Write-Host "  Office         : $offAct"
 
-    $retry = Read-HostClean "`nTenter une (re)activation avec la licence deja configuree sur ce PC ? (O/N)"
-    if ($retry -match "^[oO]") {
-        Write-Host "`nActivation Windows..."
-        cscript //nologo "$env:windir\system32\slmgr.vbs" /ato
-        Write-Host "`nActivation Office..."
-        $osppPaths = @(
-            "$env:ProgramFiles\Microsoft Office\Office16\ospp.vbs",
-            "${env:ProgramFiles(x86)}\Microsoft Office\Office16\ospp.vbs",
-            "$env:ProgramFiles\Microsoft Office\Office15\ospp.vbs",
-            "${env:ProgramFiles(x86)}\Microsoft Office\Office15\ospp.vbs"
-        )
-        $osppPath = $osppPaths | Where-Object { Test-Path $_ -ErrorAction SilentlyContinue } | Select-Object -First 1
-        if ($osppPath) {
-            cscript //nologo $osppPath /act
-        } else {
-            Write-Host "Office non detecte, etape ignoree."
+    if ($winAct -notmatch "^Active" -or $offAct -notmatch "^Active") {
+        $retry = Read-HostClean "`nTenter une (re)activation avec la licence deja configuree sur ce PC ? (O/N)"
+        if ($retry -match "^[oO]") {
+            Write-Host "`nActivation Windows..."
+            cscript //nologo "$env:windir\system32\slmgr.vbs" /ato
+            Write-Host "`nActivation Office..."
+            $osppPaths = @(
+                "$env:ProgramFiles\Microsoft Office\Office16\ospp.vbs",
+                "${env:ProgramFiles(x86)}\Microsoft Office\Office16\ospp.vbs",
+                "$env:ProgramFiles\Microsoft Office\Office15\ospp.vbs",
+                "${env:ProgramFiles(x86)}\Microsoft Office\Office15\ospp.vbs"
+            )
+            $osppPath = $osppPaths | Where-Object { Test-Path $_ -ErrorAction SilentlyContinue } | Select-Object -First 1
+            if ($osppPath) {
+                cscript //nologo $osppPath /act
+            } else {
+                Write-Host "Office non detecte, etape ignoree."
+            }
+            Write-Host "`nNouveau statut :"
+            Write-Host "  Windows        : $(Get-WindowsActivation)"
+            Write-Host "  Office         : $(Get-OfficeActivation)"
         }
-        Write-Host "`nNouveau statut :"
-        Write-Host "  Windows        : $(Get-WindowsActivation)"
-        Write-Host "  Office         : $(Get-OfficeActivation)"
     }
 
     Read-HostClean "`nAppuie sur Entree pour continuer"
