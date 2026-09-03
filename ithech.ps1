@@ -390,23 +390,47 @@ function FixTLS {
 
 function Get-WindowsActivation {
     try {
-        $result = cscript //nologo "$env:windir\system32\slmgr.vbs" /xpr 2>$null
-        $text = ($result -join " ")
-        if ($text -match "permanently activated") {
-            return "Active - licence PERMANENTE"
-        } elseif ($text -match "will expire on (.+?)\.") {
-            return "Active - licence EN VOLUME/periodique (renouvellement : $($matches[1]))"
-        } elseif ($text -match "notification") {
-            return "NON activee"
+        $lic = Get-CimInstance SoftwareLicensingProduct -ErrorAction Stop -Filter `
+            "ApplicationID='55c92734-d682-4d71-983e-d6ec3f16059f' AND LicenseStatus=1" |
+            Select-Object -First 1
+        if (-not $lic) { return "NON activee" }
+
+        $channel = $lic.ProductKeyChannel
+        if ($channel -match "Volume:GVLK") {
+            return "Active - licence EN VOLUME/KMS periodique [$channel]"
+        } elseif ($channel -match "Volume:MAK") {
+            return "Active - licence en volume MAK (permanente) [$channel]"
+        } elseif ($channel) {
+            return "Active - licence PERMANENTE [$channel]"
         } else {
-            return "Statut indetermine"
+            return "Active - licence PERMANENTE"
         }
     } catch {
-        return "Impossible a verifier"
+        return "Impossible a verifier ($($_.Exception.Message))"
     }
 }
 
 function Get-OfficeActivation {
+    try {
+        $lic = Get-CimInstance SoftwareLicensingProduct -ErrorAction Stop -Filter `
+            "ApplicationID='0ff1ce15-a989-479d-af46-f275c6370663' AND LicenseStatus=1" |
+            Select-Object -First 1
+        if ($lic) {
+            $channel = $lic.ProductKeyChannel
+            if ($channel -match "Volume:GVLK") {
+                return "Active - licence EN VOLUME/KMS periodique [$channel]"
+            } elseif ($channel -match "Volume:MAK") {
+                return "Active - licence en volume MAK (permanente) [$channel]"
+            } elseif ($channel) {
+                return "Active - licence PERMANENTE [$channel]"
+            } else {
+                return "Active - licence PERMANENTE"
+            }
+        }
+    } catch {
+        # Rien trouve via WMI -- on retente via ospp.vbs (vieilles installations MSI)
+    }
+
     $osppPaths = @(
         "$env:ProgramFiles\Microsoft Office\Office16\ospp.vbs",
         "${env:ProgramFiles(x86)}\Microsoft Office\Office16\ospp.vbs",
@@ -414,15 +438,16 @@ function Get-OfficeActivation {
         "${env:ProgramFiles(x86)}\Microsoft Office\Office15\ospp.vbs"
     )
     $osppPath = $osppPaths | Where-Object { Test-Path $_ -ErrorAction SilentlyContinue } | Select-Object -First 1
-    if (-not $osppPath) { return "Non installe (ou non detecte)" }
-
+    if (-not $osppPath) {
+        return "Non detectee (Office absent, ou Click-to-Run/365 -- activation par compte Microsoft, non verifiable ici)"
+    }
     try {
         $result = cscript //nologo $osppPath /dstatus 2>$null
         $text = ($result -join "`n")
-        if ($text -match "LICENSE STATUS.*LICENSED") {
-            if ($text -match "KMS") { return "Active - licence EN VOLUME (KMS, periodique)" }
-            elseif ($text -match "RETAIL") { return "Active - licence RETAIL (permanente)" }
-            elseif ($text -match "OEM") { return "Active - licence OEM (permanente)" }
+        if ($text -match "(?i)licens") {
+            if ($text -match "(?i)kms") { return "Active - licence EN VOLUME (KMS, periodique)" }
+            elseif ($text -match "(?i)retail") { return "Active - licence RETAIL (permanente)" }
+            elseif ($text -match "(?i)oem") { return "Active - licence OEM (permanente)" }
             else { return "Active (type non precise)" }
         } else {
             return "NON activee ou etat indetermine"
