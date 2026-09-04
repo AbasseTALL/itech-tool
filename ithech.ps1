@@ -17,12 +17,17 @@ function Read-HostClean {
     return Read-Host $Prompt
 }
 
+$RestoreUrl = "https://raw.githubusercontent.com/AbasseTALL/itech-tool/main/Restore-WindowsOldFiles.ps1"
+
 function Clear-ToolHistory {
+    $urlsToClean = @($ScriptUrl, $RestoreUrl)
     try {
         $historyPath = (Get-PSReadLineOption -ErrorAction Stop).HistorySavePath
         if ($historyPath -and (Test-Path $historyPath)) {
-            $lines = Get-Content $historyPath -ErrorAction Stop |
-                Where-Object { $_ -notmatch [regex]::Escape($ScriptUrl) }
+            $lines = Get-Content $historyPath -ErrorAction Stop
+            foreach ($url in $urlsToClean) {
+                $lines = $lines | Where-Object { $_ -notmatch [regex]::Escape($url) }
+            }
             Set-Content -Path $historyPath -Value $lines -ErrorAction Stop
         }
     } catch {
@@ -92,6 +97,13 @@ function Optimisation {
     }
 
     Write-Host "[5/5] Nettoyage des anciens composants de mise a jour (WinSxS)..."
+    Write-Host ""
+    Write-Host "┌─────────────────────────────────────────────────┐" -ForegroundColor DarkGreen
+    Write-Host "│  DISM - NETTOYAGE DISQUE (option 1)             │" -ForegroundColor DarkGreen
+    Write-Host "│  Suppression des anciens composants Windows.    │" -ForegroundColor DarkGreen
+    Write-Host "│  Aucune reparation -- liberation d'espace only. │" -ForegroundColor DarkGreen
+    Write-Host "└─────────────────────────────────────────────────┘" -ForegroundColor DarkGreen
+    Write-Host ""
     Start-Process Dism.exe -ArgumentList "/online /Cleanup-Image /StartComponentCleanup" -Wait -NoNewWindow
 
     Write-Host "`nNettoyage termine.`n"
@@ -115,6 +127,12 @@ function ReparationLocale {
     if ([string]::IsNullOrWhiteSpace($wimindex)) { $wimindex = "1" }
 
     Write-Host "`nLancement de la reparation, patience...`n"
+    Write-Host "┌─────────────────────────────────────────────────┐" -ForegroundColor DarkCyan
+    Write-Host "│  DISM - REPARATION (option 2 -- source locale)  │" -ForegroundColor DarkCyan
+    Write-Host "│  Analyse et correction des fichiers systeme.    │" -ForegroundColor DarkCyan
+    Write-Host "│  Source : ISO locale (pas de connexion requise) │" -ForegroundColor DarkCyan
+    Write-Host "└─────────────────────────────────────────────────┘" -ForegroundColor DarkCyan
+    Write-Host ""
     Start-Process Dism.exe -ArgumentList "/Online /Cleanup-Image /RestoreHealth /Source:wim:$wimpath`:$wimindex /LimitAccess" -Wait -NoNewWindow
 
     Write-Host "`nVerification des fichiers systeme (SFC)...`n"
@@ -131,6 +149,12 @@ function ReparationOnline {
     Read-HostClean "Verifie la connexion internet du PC, puis appuie sur Entree"
 
     Write-Host "`nLancement de la reparation, patience (15-30 min)...`n"
+    Write-Host "┌─────────────────────────────────────────────────┐" -ForegroundColor DarkCyan
+    Write-Host "│  DISM - REPARATION (option 2 -- en ligne)       │" -ForegroundColor DarkCyan
+    Write-Host "│  Analyse et correction des fichiers systeme.    │" -ForegroundColor DarkCyan
+    Write-Host "│  Source : Windows Update (connexion requise)    │" -ForegroundColor DarkCyan
+    Write-Host "└─────────────────────────────────────────────────┘" -ForegroundColor DarkCyan
+    Write-Host ""
     Start-Process Dism.exe -ArgumentList "/Online /Cleanup-Image /RestoreHealth" -Wait -NoNewWindow
 
     Write-Host "`nVerification des fichiers systeme (SFC)...`n"
@@ -536,6 +560,45 @@ function InfosSysteme {
     Read-HostClean "`nAppuie sur Entree pour continuer"
 }
 
+function RestoreWindowsOld {
+    Clear-Host
+    Write-Host "===============================================" -ForegroundColor Cyan
+    Write-Host "  ITHECH - Recuperation fichiers Windows.old" -ForegroundColor Cyan
+    Write-Host "===============================================`n"
+
+    $oldPath = "C:\Windows.old"
+
+    if (-not (Test-Path $oldPath)) {
+        Write-Host "Windows.old introuvable sur C: -- ce PC n'a pas de donnees a recuperer." -ForegroundColor Yellow
+        Read-HostClean "`nAppuie sur Entree pour continuer"
+        return
+    }
+
+    Write-Host "Windows.old detecte : $oldPath" -ForegroundColor Green
+    Write-Host "`nCe script va transferer vos dossiers personnels (Bureau, Documents,"
+    Write-Host "Telechargements, Images, Musique, Videos, Favoris...) depuis l'ancien"
+    Write-Host "systeme vers votre profil Windows actuel."
+    Write-Host "`nMode par defaut : DEPLACEMENT (les fichiers sont retires de Windows.old"
+    Write-Host "une fois transferes). Windows.old n'est jamais supprime automatiquement."
+
+    $confirm = Read-HostClean "`nLancer la recuperation ? (O/N)"
+    if ($confirm -notmatch "^[oO]") {
+        Write-Host "Annule." -ForegroundColor Yellow
+        return
+    }
+
+    Write-Host "`nTelechargement du script de recuperation..."
+    try {
+        $scriptContent = (New-Object Net.WebClient).DownloadString($RestoreUrl)
+        Invoke-Expression $scriptContent
+    } catch {
+        Write-Host "`nEchec du telechargement : $_" -ForegroundColor Red
+        Write-Host "Verifie la connexion internet ou lance directement :"
+        Write-Host "  irm $RestoreUrl | iex" -ForegroundColor Yellow
+        Read-HostClean "`nAppuie sur Entree pour continuer"
+    }
+}
+
 do {
     Clear-Host
     Write-Host "==============================================="
@@ -545,7 +608,8 @@ do {
     Write-Host "  2. Reparation de l'image Windows (DISM)"
     Write-Host "  3. Mise a niveau du systeme (Windows 10/11)"
     Write-Host "  4. Reparer l'acces TLS 1.1/1.2 (Windows 7/8/8.1)"
-    Write-Host "  5. Informations systeme (OS, RAM, CPU...)`n"
+    Write-Host "  5. Informations systeme (OS, RAM, CPU...)"
+    Write-Host "  6. Recuperer les fichiers depuis Windows.old`n"
     Write-Host "  0. Quitter`n"
     $choix = Read-HostClean "Choix"
     switch ($choix) {
@@ -554,6 +618,7 @@ do {
         "3" { MiseANiveau }
         "4" { FixTLS }
         "5" { InfosSysteme }
+        "6" { RestoreWindowsOld }
         "0" { Clear-ToolHistory; exit }
         default { Write-Host "Choix invalide."; Start-Sleep 1 }
     }
