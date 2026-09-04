@@ -104,11 +104,9 @@ function Optimisation {
     Write-Host "│  Aucune reparation -- liberation d'espace only. │" -ForegroundColor DarkGreen
     Write-Host "└─────────────────────────────────────────────────┘" -ForegroundColor DarkGreen
     Write-Host ""
-    Start-Process Dism.exe -ArgumentList "/online /Cleanup-Image /StartComponentCleanup" -Wait -NoNewWindow
+    & "$env:windir\system32\Dism.exe" /online /Cleanup-Image /StartComponentCleanup
 
-    Write-Host "`nNettoyage termine.`n"
-    Write-Host "Nettoyage plus profond possible (empeche de desinstaller les MAJ recentes) :"
-    Write-Host "  Dism.exe /online /Cleanup-Image /StartComponentCleanup /ResetBase"
+    Write-Host "`nNettoyage termine."
     Read-HostClean "`nAppuie sur Entree pour continuer"
 }
 
@@ -133,10 +131,10 @@ function ReparationLocale {
     Write-Host "│  Source : ISO locale (pas de connexion requise) │" -ForegroundColor DarkCyan
     Write-Host "└─────────────────────────────────────────────────┘" -ForegroundColor DarkCyan
     Write-Host ""
-    Start-Process Dism.exe -ArgumentList "/Online /Cleanup-Image /RestoreHealth /Source:wim:$wimpath`:$wimindex /LimitAccess" -Wait -NoNewWindow
+    & "$env:windir\system32\Dism.exe" /Online /Cleanup-Image /RestoreHealth /Source:wim:$wimpath`:$wimindex /LimitAccess
 
     Write-Host "`nVerification des fichiers systeme (SFC)...`n"
-    Start-Process sfc.exe -ArgumentList "/scannow" -Wait -NoNewWindow
+    & "$env:windir\system32\sfc.exe" /scannow
 
     Write-Host "`nTermine. Erreur de source DISM = version ISO differente du PC -- essaie l'option en ligne."
     Read-HostClean "Appuie sur Entree pour continuer"
@@ -155,10 +153,10 @@ function ReparationOnline {
     Write-Host "│  Source : Windows Update (connexion requise)    │" -ForegroundColor DarkCyan
     Write-Host "└─────────────────────────────────────────────────┘" -ForegroundColor DarkCyan
     Write-Host ""
-    Start-Process Dism.exe -ArgumentList "/Online /Cleanup-Image /RestoreHealth" -Wait -NoNewWindow
+    & "$env:windir\system32\Dism.exe" /Online /Cleanup-Image /RestoreHealth
 
     Write-Host "`nVerification des fichiers systeme (SFC)...`n"
-    Start-Process sfc.exe -ArgumentList "/scannow" -Wait -NoNewWindow
+    & "$env:windir\system32\sfc.exe" /scannow
 
     Write-Host "`nTermine."
     Read-HostClean "Appuie sur Entree pour continuer"
