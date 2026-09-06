@@ -45,6 +45,47 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
     exit
 }
 
+function Get-DiskType {
+    try {
+        $disk = Get-PhysicalDisk -ErrorAction Stop | Select-Object -First 1
+        return $disk.MediaType
+    } catch {
+        return "Inconnu"
+    }
+}
+
+function Show-DismWarning {
+    param([string]$Operation = "DISM")
+    $diskType = Get-DiskType
+    if ($diskType -match "SSD") {
+        $duree = "5-15 minutes (SSD detecte)"
+        $color = "Green"
+    } elseif ($diskType -match "HDD") {
+        $duree = "20-60 minutes (HDD detecte -- peut aller jusqu'a 1h30 pour SFC)"
+        $color = "Yellow"
+    } else {
+        $duree = "20-60 minutes (type de disque inconnu)"
+        $color = "Yellow"
+    }
+    Write-Host "Duree estimee : $duree" -ForegroundColor $color
+    Write-Host "Ne pas fermer la fenetre, ne pas eteindre le PC." -ForegroundColor Yellow
+    Write-Host ""
+}
+
+function Show-WaitAnimation {
+    param([string]$Message = "Initialisation")
+    $frames = @("|", "/", "-", "\")
+    $end = (Get-Date).AddSeconds(4)
+    while ((Get-Date) -lt $end) {
+        foreach ($f in $frames) {
+            Write-Host "`r  $f  $Message..." -NoNewline
+            Start-Sleep -Milliseconds 120
+        }
+    }
+    Write-Host "`r  OK $Message -- demarrage en cours.   "
+    Write-Host ""
+}
+
 function Optimisation {
     Write-Host "===============================================" -ForegroundColor Cyan
     Write-Host "  ITHECH - Desactivation des services inutiles" -ForegroundColor Cyan
@@ -79,24 +120,44 @@ function Optimisation {
     Write-Host "  Nettoyage des fichiers inutiles" -ForegroundColor Cyan
     Write-Host "===============================================`n"
 
-    Write-Host "[1/5] Fichiers temporaires utilisateur..."
-    Remove-Item "$env:TEMP\*" -Recurse -Force -ErrorAction SilentlyContinue
+    Write-Host "[1/7] Fichiers temporaires (tous les utilisateurs)..."
+    Get-ChildItem "C:\Users" -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+        $userTemp = Join-Path $_.FullName "AppData\Local\Temp"
+        if (Test-Path $userTemp) {
+            Remove-Item "$userTemp\*" -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
 
-    Write-Host "[2/5] Fichiers temporaires systeme..."
+    Write-Host "[2/7] Fichiers temporaires systeme (C:\Windows\Temp)..."
     Remove-Item "C:\Windows\Temp\*" -Recurse -Force -ErrorAction SilentlyContinue
 
-    Write-Host "[3/5] Cache Windows Update..."
+    Write-Host "[3/7] Cache Windows Update..."
     Stop-Service wuauserv, bits -Force -ErrorAction SilentlyContinue
     Remove-Item "C:\Windows\SoftwareDistribution\Download\*" -Recurse -Force -ErrorAction SilentlyContinue
     Start-Service wuauserv, bits -ErrorAction SilentlyContinue -WarningAction SilentlyContinue
 
-    Write-Host "[4/5] Corbeille (tous les disques)..."
+    Write-Host "[4/7] Corbeille (tous les disques)..."
     Get-PSDrive -PSProvider FileSystem | ForEach-Object {
         $rb = Join-Path $_.Root '$Recycle.Bin'
         if (Test-Path $rb) { Remove-Item $rb -Recurse -Force -ErrorAction SilentlyContinue }
     }
 
-    Write-Host "[5/5] Nettoyage des anciens composants de mise a jour (WinSxS)..."
+    Write-Host "[5/7] Cache des miniatures (thumbnails)..."
+    Get-ChildItem "C:\Users" -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+        $thumbPath = Join-Path $_.FullName "AppData\Local\Microsoft\Windows\Explorer"
+        if (Test-Path $thumbPath) {
+            Remove-Item "$thumbPath\thumbcache_*.db" -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    Write-Host "[6/7] Cache DNS..."
+    try {
+        Clear-DnsClientCache -ErrorAction Stop
+    } catch {
+        & ipconfig /flushdns | Out-Null
+    }
+
+    Write-Host "[7/7] Nettoyage des anciens composants de mise a jour (WinSxS)..."
     Write-Host ""
     Write-Host "┌─────────────────────────────────────────────────┐" -ForegroundColor DarkGreen
     Write-Host "│  DISM - NETTOYAGE DISQUE (option 1)             │" -ForegroundColor DarkGreen
@@ -104,6 +165,8 @@ function Optimisation {
     Write-Host "│  Aucune reparation -- liberation d'espace only. │" -ForegroundColor DarkGreen
     Write-Host "└─────────────────────────────────────────────────┘" -ForegroundColor DarkGreen
     Write-Host ""
+    Show-DismWarning -Operation "DISM nettoyage"
+    Show-WaitAnimation -Message "DISM"
     & "$env:windir\system32\Dism.exe" /online /Cleanup-Image /StartComponentCleanup
 
     Write-Host "`nNettoyage termine."
@@ -131,9 +194,13 @@ function ReparationLocale {
     Write-Host "│  Source : ISO locale (pas de connexion requise) │" -ForegroundColor DarkCyan
     Write-Host "└─────────────────────────────────────────────────┘" -ForegroundColor DarkCyan
     Write-Host ""
+    Show-DismWarning -Operation "DISM reparation"
+    Show-WaitAnimation -Message "DISM"
     & "$env:windir\system32\Dism.exe" /Online /Cleanup-Image /RestoreHealth /Source:wim:$wimpath`:$wimindex /LimitAccess
 
     Write-Host "`nVerification des fichiers systeme (SFC)...`n"
+    Show-DismWarning -Operation "SFC"
+    Show-WaitAnimation -Message "SFC"
     & "$env:windir\system32\sfc.exe" /scannow
 
     Write-Host "`nTermine. Erreur de source DISM = version ISO differente du PC -- essaie l'option en ligne."
