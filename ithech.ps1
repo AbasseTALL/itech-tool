@@ -664,26 +664,493 @@ function RestoreWindowsOld {
     }
 }
 
+# ===================== OPTION 7 — CLES PRODUIT =====================
+
+function Decode-RegistryKey {
+    param([byte[]]$dpid)
+    try {
+        $keyOffset = 52
+        $isWin8 = [math]::Floor($dpid[$keyOffset + 14] / 6) -band 1
+        $dpid[$keyOffset + 14] = ($dpid[$keyOffset + 14] -band 0xF7) -bor (($isWin8 -band 2) * 4)
+        $chars = "BCDFGHJKMPQRTVWXY2346789"
+        $key = ""; $dpidCopy = $dpid.Clone()
+        for ($i = 24; $i -ge 0; $i--) {
+            $cur = 0
+            for ($j = 14; $j -ge 0; $j--) {
+                $cur = $cur * 256 -bxor $dpidCopy[$j + $keyOffset]
+                $dpidCopy[$j + $keyOffset] = [math]::Floor($cur / 24)
+                $cur = $cur % 24
+            }
+            $key = $chars[$cur] + $key
+            if ($i % 5 -eq 0 -and $i -ne 0) { $key = "-" + $key }
+        }
+        if ($isWin8) { $key = $key.Substring(2, 14) + "N" + $key.Substring(16) }
+        return $key
+    } catch { return $null }
+}
+
+function RecuperationCle {
+    Clear-Host
+    Write-Host "===============================================" -ForegroundColor Cyan
+    Write-Host "  ITHECH - Recuperation des cles produit" -ForegroundColor Cyan
+    Write-Host "===============================================`n"
+
+    Write-Host "WINDOWS" -ForegroundColor Yellow
+    $winKey = $null
+    try {
+        $oemKey = (Get-WmiObject -query 'select * from SoftwareLicensingService' -ErrorAction Stop).OA3xOriginalProductKey
+        if ($oemKey -and $oemKey.Trim().Length -gt 10) { $winKey = "OEM/UEFI  : $($oemKey.Trim())" }
+    } catch {}
+    if (-not $winKey) {
+        try {
+            $dpid = (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion" -ErrorAction Stop).DigitalProductId
+            $decoded = Decode-RegistryKey ([byte[]]$dpid)
+            if ($decoded) { $winKey = "Registre  : $decoded" }
+        } catch {}
+    }
+    if ($winKey) {
+        Write-Host "  Cle       : $winKey" -ForegroundColor Green
+    } else {
+        Write-Host "  Licence numerique liee au materiel -- pas de cle textuelle recuperable." -ForegroundColor Yellow
+        Write-Host "  (Normal sur PC Windows 10/11 active par licence numerique)" -ForegroundColor Gray
+    }
+
+    Write-Host "`nOFFICE" -ForegroundColor Yellow
+    $osppPaths = @(
+        "$env:ProgramFiles\Microsoft Office\Office16\ospp.vbs",
+        "${env:ProgramFiles(x86)}\Microsoft Office\Office16\ospp.vbs",
+        "$env:ProgramFiles\Microsoft Office\Office15\ospp.vbs",
+        "${env:ProgramFiles(x86)}\Microsoft Office\Office15\ospp.vbs"
+    )
+    $osppPath = $osppPaths | Where-Object { Test-Path $_ -ErrorAction SilentlyContinue } | Select-Object -First 1
+    if ($osppPath) {
+        $result = cscript //nologo $osppPath /dstatus 2>$null
+        $last5  = ($result | Select-String -Pattern "derniers|Last 5|last5" -ErrorAction SilentlyContinue |
+                   Select-Object -First 1) -replace ".*:\s*", ""
+        if ($last5) {
+            Write-Host "  5 derniers caracteres : $last5" -ForegroundColor Green
+            Write-Host "  (Microsoft masque le reste -- seuls les 5 derniers sont accessibles)" -ForegroundColor Gray
+        } else {
+            Write-Host "  Impossible de lire (Click-to-Run/365 -- activation par compte Microsoft)" -ForegroundColor Yellow
+        }
+    } else { Write-Host "  Office non detecte sur ce PC." -ForegroundColor Yellow }
+
+    Read-HostClean "`nAppuie sur Entree pour continuer"
+}
+
+# ===================== OPTION 8 — SAUVEGARDE RAPIDE =====================
+
+function SauvegardeRapide {
+    Clear-Host
+    Write-Host "===============================================" -ForegroundColor Cyan
+    Write-Host "  ITHECH - Sauvegarde rapide" -ForegroundColor Cyan
+    Write-Host "===============================================`n"
+    Write-Host "Dossiers sauvegardes : Bureau, Documents, Telechargements, Images`n"
+
+    $drives = Get-PSDrive -PSProvider FileSystem -ErrorAction SilentlyContinue |
+        Where-Object { $_.Root -ne "C:\" -and (Test-Path $_.Root) }
+    if (-not $drives) {
+        Write-Host "Aucun lecteur de destination detecte (cle USB, disque externe)." -ForegroundColor Red
+        Write-Host "Branche un support externe puis relance cette option."
+        Read-HostClean "`nAppuie sur Entree pour continuer"
+        return
+    }
+
+    Write-Host "Lecteurs disponibles :"
+    $drives | ForEach-Object {
+        $free = [math]::Round($_.Free / 1GB, 1)
+        Write-Host "  $($_.Root)  --  $free Go libres" -ForegroundColor Cyan
+    }
+
+    $dest = Read-HostClean "`nLettre de destination (ex: D)"
+    $destRoot = "$($dest.Trim().TrimEnd(':')):\Sauvegarde_ITHECH_$(Get-Date -Format 'yyyyMMdd_HHmm')"
+    if (-not (Test-Path "$($dest.Trim().TrimEnd(':')):\")) {
+        Write-Host "Lecteur introuvable." -ForegroundColor Red
+        Read-HostClean "Appuie sur Entree pour continuer"
+        return
+    }
+
+    $folders = @("Desktop","Documents","Downloads","Pictures")
+    $shellFolders = @{
+        Desktop     = [Environment]::GetFolderPath("Desktop")
+        Documents   = [Environment]::GetFolderPath("MyDocuments")
+        Downloads   = Join-Path $env:USERPROFILE "Downloads"
+        Pictures    = [Environment]::GetFolderPath("MyPictures")
+    }
+
+    foreach ($name in $folders) {
+        $src = $shellFolders[$name]
+        if (-not (Test-Path $src)) { continue }
+        $dst = Join-Path $destRoot $name
+        Write-Host "`nCopie : $name  -->  $dst"
+        & robocopy $src $dst /E /MT:4 /R:1 /W:1 /NFL /NDL /NJH /NJS
+    }
+
+    Write-Host "`nSauvegarde terminee : $destRoot" -ForegroundColor Green
+    Read-HostClean "`nAppuie sur Entree pour continuer"
+}
+
+# ===================== OPTION 9 — DIAGNOSTIC RESEAU =====================
+
+function DiagnosticReseau {
+    Clear-Host
+    Write-Host "===============================================" -ForegroundColor Cyan
+    Write-Host "  ITHECH - Diagnostic reseau" -ForegroundColor Cyan
+    Write-Host "===============================================`n"
+
+    try {
+        $adapters = Get-WmiObject Win32_NetworkAdapterConfiguration -ErrorAction Stop |
+            Where-Object { $_.IPEnabled -eq $true }
+    } catch {
+        Write-Host "Impossible de lire la configuration reseau." -ForegroundColor Red
+        Read-HostClean "`nAppuie sur Entree pour continuer"
+        return
+    }
+
+    foreach ($a in $adapters) {
+        Write-Host "Adaptateur : $($a.Description)" -ForegroundColor Yellow
+        Write-Host "  IP        : $($a.IPAddress[0])"
+        Write-Host "  Masque    : $($a.IPSubnet[0])"
+        $gw = if ($a.DefaultIPGateway) { $a.DefaultIPGateway[0] } else { "(non definie)" }
+        Write-Host "  Passerelle: $gw"
+        $dns = if ($a.DNSServerSearchOrder) { $a.DNSServerSearchOrder -join ", " } else { "(aucun)" }
+        Write-Host "  DNS       : $dns"
+
+        if ($a.DefaultIPGateway) {
+            $pingGW = Test-Connection $a.DefaultIPGateway[0] -Count 1 -Quiet -ErrorAction SilentlyContinue
+            Write-Host "  Ping GW   : $(if ($pingGW) {'OK' } else {'ECHEC'} )" -ForegroundColor $(if ($pingGW) {"Green"} else {"Red"})
+        }
+        Write-Host ""
+    }
+
+    $ping88 = Test-Connection "8.8.8.8" -Count 1 -Quiet -ErrorAction SilentlyContinue
+    Write-Host "Ping internet (8.8.8.8)  : $(if ($ping88) {'OK'} else {'ECHEC'})" -ForegroundColor $(if ($ping88) {"Green"} else {"Red"})
+
+    try {
+        $null = [System.Net.Dns]::GetHostAddresses("www.google.com")
+        Write-Host "Resolution DNS (google)  : OK" -ForegroundColor Green
+    } catch {
+        Write-Host "Resolution DNS (google)  : ECHEC -- probleme DNS" -ForegroundColor Red
+    }
+
+    Write-Host ""
+    if (-not $ping88) {
+        Write-Host "Conseil : pas de ping internet --> essaie l'option 11 (Reset pile reseau)." -ForegroundColor Yellow
+    }
+
+    Read-HostClean "`nAppuie sur Entree pour continuer"
+}
+
+# ===================== OPTION 10 — PILOTES INUTILES =====================
+
+function NettoyagePilotes {
+    Clear-Host
+    Write-Host "===============================================" -ForegroundColor Cyan
+    Write-Host "  ITHECH - Nettoyage des pilotes inutiles" -ForegroundColor Cyan
+    Write-Host "===============================================`n"
+    Write-Host "Recherche des peripheriques fantomes (deconnectes)..."
+
+    try {
+        $ghosts = Get-PnpDevice -ErrorAction Stop |
+            Where-Object { $_.Status -eq 'Unknown' -or $_.Present -eq $false } |
+            Where-Object { $_.Class -notin @('Computer','Processor','DiskDrive','Volume','HIDClass') }
+    } catch {
+        Write-Host "Get-PnpDevice non disponible (Windows 7)." -ForegroundColor Yellow
+        $env:devmgr_show_nonpresent_devices = "1"
+        Write-Host "Active l'affichage des peripheriques masques dans le Gestionnaire de peripheriques :"
+        Write-Host "  devmgmt.msc -> Affichage -> Afficher les peripheriques masques"
+        Read-HostClean "`nAppuie sur Entree pour continuer"
+        return
+    }
+
+    if (-not $ghosts) {
+        Write-Host "Aucun peripherique fantome detecte." -ForegroundColor Green
+        Read-HostClean "`nAppuie sur Entree pour continuer"
+        return
+    }
+
+    Write-Host "$($ghosts.Count) peripherique(s) fantome(s) detecte(s) :`n"
+    $ghosts | ForEach-Object { Write-Host "  [$($_.Class)]  $($_.FriendlyName)" }
+
+    $confirm = Read-HostClean "`nSupprimerles peripheriques fantomes et leurs pilotes ? (O/N)"
+    if ($confirm -notmatch "^[oO]") { Write-Host "Annule."; return }
+
+    $ghosts | ForEach-Object {
+        Write-Host "  Suppression : $($_.FriendlyName)..."
+        & pnputil /remove-device $_.InstanceId | Out-Null
+    }
+
+    Write-Host "`nNettoyage termine." -ForegroundColor Green
+    Read-HostClean "`nAppuie sur Entree pour continuer"
+}
+
+# ===================== OPTION 11 — RESET PILE RESEAU =====================
+
+function ResetReseau {
+    Clear-Host
+    Write-Host "===============================================" -ForegroundColor Cyan
+    Write-Host "  ITHECH - Reinitialisation de la pile reseau" -ForegroundColor Cyan
+    Write-Host "===============================================`n"
+    Write-Host "Corrige la plupart des problemes 'plus d'internet' sans reinstaller."
+    Write-Host "REDEMARRAGE obligatoire a la fin.`n"
+
+    $confirm = Read-HostClean "Confirmer la reinitialisation ? (O/N)"
+    if ($confirm -notmatch "^[oO]") { Write-Host "Annule."; return }
+
+    Write-Host "`n[1/6] Winsock reset..."
+    netsh winsock reset | Out-Null
+
+    Write-Host "[2/6] IP reset..."
+    netsh int ip reset | Out-Null
+
+    Write-Host "[3/6] IPv4 reset..."
+    netsh int ipv4 reset | Out-Null
+
+    Write-Host "[4/6] IPv6 reset..."
+    netsh int ipv6 reset | Out-Null
+
+    Write-Host "[5/6] Liberation IP (release)..."
+    ipconfig /release | Out-Null
+
+    Write-Host "[6/6] Vider le cache DNS..."
+    ipconfig /flushdns | Out-Null
+
+    Write-Host "`nReinitialisation terminee." -ForegroundColor Green
+    Write-Host "IMPORTANT : redemarrage necessaire pour appliquer." -ForegroundColor Yellow
+
+    $r = Read-HostClean "Redemarrer maintenant ? (O/N)"
+    if ($r -match "^[oO]") { Restart-Computer -Force }
+}
+
+# ===================== OPTION 12 — PLANIFICATEUR DE TACHES =====================
+
+function NettoyageTaches {
+    Clear-Host
+    Write-Host "===============================================" -ForegroundColor Cyan
+    Write-Host "  ITHECH - Desactivation des taches inutiles" -ForegroundColor Cyan
+    Write-Host "===============================================`n"
+
+    $tasks = @(
+        @{Path="\Microsoft\Windows\Application Experience"; Name="Microsoft Compatibility Appraiser"},
+        @{Path="\Microsoft\Windows\Application Experience"; Name="ProgramDataUpdater"},
+        @{Path="\Microsoft\Windows\Autochk";                Name="Proxy"},
+        @{Path="\Microsoft\Windows\Customer Experience Improvement Program"; Name="Consolidator"},
+        @{Path="\Microsoft\Windows\Customer Experience Improvement Program"; Name="UsbCeip"},
+        @{Path="\Microsoft\Windows\DiskDiagnostic";         Name="Microsoft-Windows-DiskDiagnosticDataCollector"},
+        @{Path="\Microsoft\Windows\Feedback\Siuf";          Name="DmClient"},
+        @{Path="\Microsoft\Windows\Feedback\Siuf";          Name="DmClientOnScenarioDownload"},
+        @{Path="\Microsoft\Windows\Windows Error Reporting";Name="QueueReporting"},
+        @{Path="\Microsoft\Windows\Maps";                   Name="MapsUpdateTask"},
+        @{Path="\Microsoft\Windows\Maps";                   Name="MapsToastTask"},
+        @{Path="\Microsoft\Windows\Power Efficiency Diagnostics"; Name="AnalyzeSystem"},
+        @{Path="\Microsoft\Windows\Shell";                  Name="FamilySafetyMonitor"},
+        @{Path="\Microsoft\Windows\Shell";                  Name="FamilySafetyRefreshTask"}
+    )
+
+    $disabled = 0; $notFound = 0
+    foreach ($t in $tasks) {
+        try {
+            Disable-ScheduledTask -TaskPath $t.Path -TaskName $t.Name -ErrorAction Stop | Out-Null
+            Write-Host "  OK : $($t.Name)" -ForegroundColor Green
+            $disabled++
+        } catch {
+            Write-Host "  -- : $($t.Name) (absente ou deja desactivee)" -ForegroundColor Gray
+            $notFound++
+        }
+    }
+
+    Write-Host "`n$disabled tache(s) desactivee(s), $notFound absente(s) ou deja desactivee(s)." -ForegroundColor Cyan
+    Read-HostClean "`nAppuie sur Entree pour continuer"
+}
+
+# ===================== SOUS-MENUS PRINCIPAUX =====================
+
+function Menu1DiagnosticInfo {
+    do {
+        Clear-Host
+        Write-Host "===============================================" -ForegroundColor Cyan
+        Write-Host "  1. Diagnostic et Informations" -ForegroundColor Cyan
+        Write-Host "===============================================`n"
+        Write-Host "  1. Informations systeme (OS, RAM, CPU, activation...)"
+        Write-Host "  2. Cles produit (Windows + Office)`n"
+        Write-Host "  0. Retour`n"
+        switch (Read-HostClean "Choix") {
+            "1" { InfosSysteme }
+            "2" { RecuperationCle }
+            "0" { return }
+            default { Write-Host "Choix invalide."; Start-Sleep 1 }
+        }
+    } while ($true)
+}
+
+function DemarrageProgrammes {
+    Clear-Host
+    Write-Host "===============================================" -ForegroundColor Cyan
+    Write-Host "  ITHECH - Programmes au demarrage" -ForegroundColor Cyan
+    Write-Host "===============================================`n"
+
+    $regPaths = @(
+        @{Path="HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run"; Scope="HKCU"},
+        @{Path="HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run"; Scope="HKLM"},
+        @{Path="HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Run"; Scope="HKLM32"}
+    )
+
+    $disabled = 0; $errors = 0; $found = 0
+
+    foreach ($reg in $regPaths) {
+        if (-not (Test-Path $reg.Path -ErrorAction SilentlyContinue)) { continue }
+        $entries = Get-ItemProperty $reg.Path -ErrorAction SilentlyContinue
+        if (-not $entries) { continue }
+
+        $approvedPath = if ($reg.Scope -eq "HKCU") {
+            "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run"
+        } else {
+            "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run"
+        }
+
+        $entries.PSObject.Properties |
+            Where-Object { $_.Name -notlike "PS*" } |
+            ForEach-Object {
+                $name = $_.Name; $found++
+                try {
+                    if (-not (Test-Path $approvedPath -ErrorAction SilentlyContinue)) {
+                        New-Item -Path $approvedPath -Force | Out-Null
+                    }
+                    # 0x03 = desactive (meme methode que Task Manager -- reversible)
+                    $val = [byte[]](0x03,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00)
+                    New-ItemProperty -Path $approvedPath -Name $name -Value $val -PropertyType Binary -Force | Out-Null
+                    Write-Host "  [DESACTIVE] $name" -ForegroundColor Green
+                    $disabled++
+                } catch {
+                    Write-Host "  [ECHEC]    $name -- $_" -ForegroundColor Red
+                    $errors++
+                }
+            }
+    }
+
+    if ($found -eq 0) {
+        Write-Host "Aucun programme de demarrage trouve." -ForegroundColor Green
+    } else {
+        Write-Host "`n$disabled desactive(s)" -ForegroundColor Cyan
+        if ($errors -gt 0) { Write-Host "$errors echec(s) -- droits insuffisants sur ces entrees." -ForegroundColor Red }
+        Write-Host "`nTous reversibles via : Gestionnaire des taches > Demarrage." -ForegroundColor Yellow
+    }
+
+    Read-HostClean "`nAppuie sur Entree pour continuer"
+}
+
+function Menu2Optimisation {
+    do {
+        Clear-Host
+        Write-Host "===============================================" -ForegroundColor Cyan
+        Write-Host "  2. Optimisation" -ForegroundColor Cyan
+        Write-Host "===============================================`n"
+        Write-Host "  1. Services inutiles + Nettoyage disque complet"
+        Write-Host "  2. Programmes au demarrage (desactivation automatique)"
+        Write-Host "  3. Desactivation des taches planifiees inutiles"
+        Write-Host "  4. Nettoyage des pilotes fantomes`n"
+        Write-Host "  0. Retour`n"
+        switch (Read-HostClean "Choix") {
+            "1" { Optimisation }
+            "2" { DemarrageProgrammes }
+            "3" { NettoyageTaches }
+            "4" { NettoyagePilotes }
+            "0" { return }
+            default { Write-Host "Choix invalide."; Start-Sleep 1 }
+        }
+    } while ($true)
+}
+
+function Menu3Reparation {
+    do {
+        Clear-Host
+        Write-Host "===============================================" -ForegroundColor Cyan
+        Write-Host "  3. Reparation systeme" -ForegroundColor Cyan
+        Write-Host "===============================================`n"
+        Write-Host "  1. DISM + SFC -- source locale (ISO/cle USB)"
+        Write-Host "     Rapide, hors-ligne, meme version requise."
+        Write-Host ""
+        Write-Host "  2. DISM + SFC -- en ligne (Windows Update)"
+        Write-Host "     Plus lent, internet requis, toutes versions.`n"
+        Write-Host "  0. Retour`n"
+        switch (Read-HostClean "Choix") {
+            "1" { ReparationLocale }
+            "2" { ReparationOnline }
+            "0" { return }
+            default { Write-Host "Choix invalide."; Start-Sleep 1 }
+        }
+    } while ($true)
+}
+
+function Menu4Reseau {
+    do {
+        Clear-Host
+        Write-Host "===============================================" -ForegroundColor Cyan
+        Write-Host "  4. Reseau" -ForegroundColor Cyan
+        Write-Host "===============================================`n"
+        Write-Host "  1. Diagnostic reseau (IP, ping, DNS)"
+        Write-Host "  2. Reinitialisation pile reseau (Winsock, IP...)"
+        Write-Host "  3. Reparer acces TLS 1.1/1.2 (Windows 7/8/8.1)`n"
+        Write-Host "  0. Retour`n"
+        switch (Read-HostClean "Choix") {
+            "1" { DiagnosticReseau }
+            "2" { ResetReseau }
+            "3" { FixTLS }
+            "0" { return }
+            default { Write-Host "Choix invalide."; Start-Sleep 1 }
+        }
+    } while ($true)
+}
+
+function Menu5Migration {
+    do {
+        Clear-Host
+        Write-Host "===============================================" -ForegroundColor Cyan
+        Write-Host "  5. Migration Windows" -ForegroundColor Cyan
+        Write-Host "===============================================`n"
+        Write-Host "  1. Sauvegarde rapide (Bureau, Documents...)"
+        Write-Host "  2. Mise a niveau Windows 10/11"
+        Write-Host "  3. Recuperer les fichiers depuis Windows.old`n"
+        Write-Host "  0. Retour`n"
+        switch (Read-HostClean "Choix") {
+            "1" { SauvegardeRapide }
+            "2" { MiseANiveau }
+            "3" { RestoreWindowsOld }
+            "0" { return }
+            default { Write-Host "Choix invalide."; Start-Sleep 1 }
+        }
+    } while ($true)
+}
+
+# ===================== MENU PRINCIPAL =====================
+
 do {
     Clear-Host
-    Write-Host "==============================================="
-    Write-Host "  ITHECH - Outil de maintenance PC"
-    Write-Host "===============================================`n"
-    Write-Host "  1. Optimisation (services + nettoyage disque)"
-    Write-Host "  2. Reparation de l'image Windows (DISM)"
-    Write-Host "  3. Mise a niveau du systeme (Windows 10/11)"
-    Write-Host "  4. Reparer l'acces TLS 1.1/1.2 (Windows 7/8/8.1)"
-    Write-Host "  5. Informations systeme (OS, RAM, CPU...)"
-    Write-Host "  6. Recuperer les fichiers depuis Windows.old`n"
+    Write-Host "================================================"
+    Write-Host "   ITHECH - Outil de maintenance PC"
+    Write-Host "================================================`n"
+    Write-Host "  1. Diagnostic et Informations"
+    Write-Host "     Infos systeme, cles produit, activation"
+    Write-Host ""
+    Write-Host "  2. Optimisation"
+    Write-Host "     Services, nettoyage disque, taches, pilotes"
+    Write-Host ""
+    Write-Host "  3. Reparation systeme"
+    Write-Host "     DISM + SFC (locale ou en ligne)"
+    Write-Host ""
+    Write-Host "  4. Reseau"
+    Write-Host "     Diagnostic, reset pile, fix TLS"
+    Write-Host ""
+    Write-Host "  5. Migration Windows"
+    Write-Host "     Sauvegarde, mise a niveau, Windows.old`n"
     Write-Host "  0. Quitter`n"
     $choix = Read-HostClean "Choix"
     switch ($choix) {
-        "1" { Optimisation }
-        "2" { MenuReparation }
-        "3" { MiseANiveau }
-        "4" { FixTLS }
-        "5" { InfosSysteme }
-        "6" { RestoreWindowsOld }
+        "1" { Menu1DiagnosticInfo }
+        "2" { Menu2Optimisation }
+        "3" { Menu3Reparation }
+        "4" { Menu4Reseau }
+        "5" { Menu5Migration }
         "0" { Clear-ToolHistory; exit }
         default { Write-Host "Choix invalide."; Start-Sleep 1 }
     }
